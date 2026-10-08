@@ -8,27 +8,33 @@ Status: skeleton. Design, spike results and the task list live in
 `~/pi_sandbox/spiral/docs/standalone-runner-plan.md` and
 `standalone-runner-tasks.md`.
 
-## API (planned)
+## API
 
 ```ts
 import { runAgent } from 'pi-agent-runner';
 
+// Inside a Pi extension: `pi` is the ExtensionAPI, `ctx` the current context.
 const result = await runAgent({
+  parent: { events: pi.events, ctx },
   cwd,
   systemPrompt, // replaces Pi's prompt
   task,
   tools: ['read', 'grep', 'find', 'ls'],
   model: 'inherit', // or 'provider/id'
   extensions: 'none', // or { packages: ['pi-mcp-adapter'] }
-  result: { kind: 'structured', schema },
   timeoutMs: 600_000,
   signal,
+  onUpdate: ({ turn, tool, tokens }) => {},
 });
-// result: { status, value, usage, error?, transcriptPath? }
+// result: { status, value, usage, model?, error? }
 ```
 
 Statuses: `completed | failed | timed_out | cancelled |
-structured_output_failed`.
+structured_output_failed`. Implemented now: `completed`, `failed`,
+`timed_out`, `cancelled`. Later: structured output (`result: { kind:
+'structured' }`, T08), per-tool timeout and the permission-prompt pause of
+the run timer (T07), `transcriptPath` (T10). Until then structured results
+fail fast and `toolTimeoutMs` / `transcriptPath` are ignored.
 
 Behavior the spikes settled:
 
