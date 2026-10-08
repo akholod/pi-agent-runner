@@ -2,7 +2,19 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { runAgent } from '../src/index.ts';
 import type { RunAgentOptions, RunUpdate } from '../src/index.ts';
-import { FakeSession, assistant, factoryOf, parent, sleep } from './fake.ts';
+import {
+  PERMISSION_DECISION_CHANNEL,
+  PERMISSION_PROMPT_CHANNEL,
+} from '../src/human-wait.ts';
+import {
+  FakeSession,
+  assistant,
+  factoryOf,
+  fakeParent,
+  hangUntilAbort,
+  parent,
+  sleep,
+} from './fake.ts';
 
 const base = (extra: Partial<RunAgentOptions> = {}): RunAgentOptions => ({
   parent,
@@ -11,12 +23,6 @@ const base = (extra: Partial<RunAgentOptions> = {}): RunAgentOptions => ({
   task: 'do it',
   ...extra,
 });
-
-// Prompt that hangs until the fake is aborted.
-const hangUntilAbort = (session: FakeSession) =>
-  new Promise<void>((resolve) => {
-    session.onAbort = resolve;
-  });
 
 test('completed: text, usage, counters, model, one dispose', async () => {
   const session = new FakeSession();
@@ -217,4 +223,143 @@ test('dispose rejecting does not change a completed result', async () => {
   const result = await runAgent(base(), { factory });
   assert.equal(result.status, 'completed');
   assert.equal(result.value, 'fine');
+});
+
+const startTool = (s: FakeSession, id = 't1', name = 'read') => {
+  s.emit({ type: 'tool_execution_start', toolCallId: id, toolName: name });
+  return () => s.onToolCall?.({ toolCallId: id, toolName: name });
+};
+const endTool = (s: FakeSession, id = 't1') =>
+  s.emit({ type: 'tool_execution_end', toolCallId: id });
+
+test('permission wait does not count against run or tool timers', async () => {
+  const p = fakeParent();
+  const session = new FakeSession();
+  session.script = async (s) => {
+    const begin = startTool(s);
+    p.events.emit(PERMISSION_PROMPT_CHANNEL, { requestId: 'r1' });
+    await sleep(120);
+    p.events.emit(PERMISSION_DECISION_CHANNEL, { requestId: 'r1' });
+    begin();
+    endTool(s);
+    s.messages.push(assistant('done'));
+  };
+  const result = await runAgent(
+    base({ parent: p, timeoutMs: 60, toolTimeoutMs: 60 }),
+    { factory: factoryOf(async () => session) },
+  );
+  assert.equal(result.status, 'completed');
+  assert.ok(result.usage.waitedMs >= 100, String(result.usage.waitedMs));
+  assert.equal(session.aborts, 0);
+});
+
+test('tool timeout: a hung tool times out and names the tool', async () => {
+  const session = new FakeSession();
+  session.script = async (s) => {
+    startTool(s, 't1', 'bash')();
+    await hangUntilAbort(s);
+  };
+  const result = await runAgent(base({ toolTimeoutMs: 20 }), {
+    factory: factoryOf(async () => session),
+  });
+  assert.equal(result.status, 'timed_out');
+  assert.match(result.error ?? '', /tool 'bash' exceeded its timeout of 20ms/);
+  assert.equal(session.aborts, 1);
+  assert.equal(session.disposes, 1);
+});
+
+test('tool timer is cleared by tool_execution_end', async () => {
+  const session = new FakeSession();
+  session.script = async (s) => {
+    startTool(s)();
+    endTool(s);
+    await sleep(80);
+    s.messages.push(assistant('ok'));
+  };
+  const result = await runAgent(base({ toolTimeoutMs: 30 }), {
+    factory: factoryOf(async () => session),
+  });
+  assert.equal(result.status, 'completed');
+});
+
+test('run timer resumes after the decision and still fires', async () => {
+  const p = fakeParent();
+  const session = new FakeSession();
+  session.script = async (s) => {
+    p.events.emit(PERMISSION_PROMPT_CHANNEL, { requestId: 'r1' });
+    await sleep(80);
+    p.events.emit(PERMISSION_DECISION_CHANNEL, { requestId: 'r1' });
+    await hangUntilAbort(s);
+  };
+  const result = await runAgent(base({ parent: p, timeoutMs: 40 }), {
+    factory: factoryOf(async () => session),
+  });
+  assert.equal(result.status, 'timed_out');
+  assert.equal(result.error, 'timed out after 40ms');
+  assert.ok(result.usage.waitedMs >= 60);
+});
+
+test('a prompt open before the run starts keeps the run paused', async () => {
+  const p = fakeParent();
+  // The tracker is created by an earlier run on this bus.
+  const first = new FakeSession();
+  first.messages.push(assistant('x'));
+  await runAgent(base({ parent: p }), {
+    factory: factoryOf(async () => first),
+  });
+  p.events.emit(PERMISSION_PROMPT_CHANNEL, { requestId: 'early' });
+  const session = new FakeSession();
+  session.script = async (s) => {
+    await sleep(100);
+    p.events.emit(PERMISSION_DECISION_CHANNEL, { requestId: 'early' });
+    s.messages.push(assistant('late'));
+  };
+  const result = await runAgent(base({ parent: p, timeoutMs: 40 }), {
+    factory: factoryOf(async () => session),
+  });
+  assert.equal(result.status, 'completed');
+  assert.ok(result.usage.waitedMs >= 80);
+});
+
+test('cancelled during startup, tool, and final answer', async () => {
+  const cases: Array<(s: FakeSession, c: AbortController) => void> = [
+    () => {},
+    (s) => startTool(s)(),
+    (s) => {
+      startTool(s)();
+      endTool(s);
+    },
+  ];
+  for (const [index, step] of cases.entries()) {
+    const controller = new AbortController();
+    const session = new FakeSession();
+    const updates: RunUpdate[] = [];
+    session.script = async (s) => {
+      step(s, controller);
+      setTimeout(() => controller.abort(), 10);
+      await hangUntilAbort(s);
+    };
+    const factory = factoryOf(async () => {
+      if (index === 0) {
+        setTimeout(() => controller.abort(), 5);
+        await sleep(20);
+      }
+      return session;
+    });
+    const result = await runAgent(
+      base({
+        signal: controller.signal,
+        timeoutMs: 30_000,
+        toolTimeoutMs: 30_000,
+        onUpdate: (u) => updates.push(u),
+      }),
+      { factory },
+    );
+    assert.equal(result.status, 'cancelled', `case ${index}`);
+    assert.equal(session.disposes, 1, `case ${index}`);
+    const seen = updates.length;
+    session.emit({ type: 'turn_start' });
+    session.onToolCall?.({ toolCallId: 'late', toolName: 'read' });
+    assert.equal(updates.length, seen);
+  }
 });

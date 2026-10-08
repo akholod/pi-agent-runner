@@ -56,8 +56,10 @@ export interface RunAgentOptions {
   result?: ResultSpec;
   /** Wall-clock limit; time spent waiting for a person is not counted. */
   timeoutMs?: number;
-  // Not implemented yet: toolTimeoutMs is T07, transcriptPath is T10.
-  /** Per-tool limit, counted from the moment the tool actually runs. */
+  /**
+   * Per-tool limit, counted from the moment the tool actually runs (after
+   * permission gates); paused while a person is asked.
+   */
   toolTimeoutMs?: number;
   signal?: AbortSignal;
   onUpdate?: (update: RunUpdate) => void;
@@ -80,6 +82,8 @@ export interface RunUsage {
   turns: number;
   toolCalls: number;
   durationMs: number;
+  /** Time the run timer was paused by people being asked. */
+  waitedMs: number;
 }
 
 export interface RunAgentResult {

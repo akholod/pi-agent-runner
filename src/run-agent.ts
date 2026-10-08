@@ -2,6 +2,9 @@ import {
   DEFAULT_PROVIDER_EXTENSIONS,
   createPiSessionFactory,
 } from './session.ts';
+import { humanWaitTracker } from './human-wait.ts';
+import { createPausableTimer } from './timer.ts';
+import type { PausableTimer } from './timer.ts';
 import type {
   ChildEvent,
   ChildSession,
@@ -42,6 +45,7 @@ const emptyUsage = (durationMs: number): RunUsage => ({
   turns: 0,
   toolCalls: 0,
   durationMs,
+  waitedMs: 0,
 });
 
 const messageOf = (error: unknown) =>
@@ -87,7 +91,7 @@ export const runAgent = async (
 ): Promise<RunAgentResult> => {
   const startedAt = Date.now();
   const elapsed = () => Date.now() - startedAt;
-  const { signal, timeoutMs, onUpdate } = options;
+  const { signal, timeoutMs, toolTimeoutMs, onUpdate } = options;
 
   if (signal?.aborted) {
     return {
@@ -107,34 +111,84 @@ export const runAgent = async (
   }
 
   const factory = deps.factory ?? (defaultFactory ??= createPiSessionFactory());
-  let reason: Reason | undefined;
+  let reason: { why: Reason; error: string } | undefined;
+  const stopReason = () => reason;
   let session: ChildSession | undefined;
-  const stop = (why: Reason) => {
-    reason ??= why;
+  let finished = false;
+
+  const toolTimers = new Map<string, PausableTimer>();
+  let runTimer: PausableTimer | undefined;
+  const clearTimers = () => {
+    runTimer?.clear();
+    for (const timer of toolTimers.values()) timer.clear();
+    toolTimers.clear();
+  };
+  const stop = (why: Reason, error: string) => {
+    if (reason) return;
+    reason = { why, error };
+    clearTimers();
     session?.abort().catch(() => {});
   };
+
+  // Time the run timer was held by people being asked, closed intervals
+  // plus the one still open.
+  let waiting = false;
+  let waitedMs = 0;
+  let waitStart = 0;
+  const waited = () => waitedMs + (waiting ? Date.now() - waitStart : 0);
+  const setWaiting = (value: boolean) => {
+    if (value === waiting || finished) return;
+    waiting = value;
+    if (value) {
+      waitStart = Date.now();
+      runTimer?.pause();
+      for (const timer of toolTimers.values()) timer.pause();
+    } else {
+      waitedMs += Date.now() - waitStart;
+      runTimer?.resume();
+      for (const timer of toolTimers.values()) timer.resume();
+    }
+  };
+  const tracker = humanWaitTracker(options.parent.events);
+  const stopTracking = tracker.onChange(setWaiting);
+  setWaiting(tracker.waiting);
+
+  if (timeoutMs !== undefined) {
+    runTimer = createPausableTimer(timeoutMs, () =>
+      stop('timed_out', `timed out after ${timeoutMs}ms`),
+    );
+    if (waiting) runTimer.pause();
+  }
+
+  const onToolCall = (call: { toolCallId: string; toolName: string }) => {
+    if (finished || reason || toolTimeoutMs === undefined) return;
+    toolTimers.get(call.toolCallId)?.clear();
+    const timer = createPausableTimer(toolTimeoutMs, () =>
+      stop(
+        'timed_out',
+        `tool '${call.toolName}' exceeded its timeout of ${toolTimeoutMs}ms`,
+      ),
+    );
+    if (waiting) timer.pause();
+    toolTimers.set(call.toolCallId, timer);
+  };
+
   const outcome = (status: RunStatus, error: string): RunAgentResult => ({
     status,
     value: undefined,
-    usage: emptyUsage(elapsed()),
+    usage: { ...emptyUsage(elapsed()), waitedMs: waited() },
     error,
   });
   const stopped = () =>
     outcome(
-      reason === 'timed_out' ? 'timed_out' : 'cancelled',
-      reason === 'timed_out' ? `timed out after ${timeoutMs}ms` : 'aborted',
+      reason?.why === 'timed_out' ? 'timed_out' : 'cancelled',
+      reason?.error ?? 'aborted',
     );
 
-  // The timer pauses while a person answers a permission prompt (T07).
-  const timer =
-    timeoutMs === undefined
-      ? undefined
-      : setTimeout(() => stop('timed_out'), timeoutMs);
-  const onAbort = () => stop('cancelled');
+  const onAbort = () => stop('cancelled', 'aborted');
   signal?.addEventListener('abort', onAbort, { once: true });
 
   let unsubscribe: (() => void) | undefined;
-  let finished = false;
   try {
     try {
       const inheritModel = !options.model || options.model === 'inherit';
@@ -151,6 +205,7 @@ export const runAgent = async (
         providerExtensions:
           options.providerExtensions ?? DEFAULT_PROVIDER_EXTENSIONS,
         parent: options.parent,
+        onToolCall,
       });
     } catch (error) {
       if (reason) return stopped();
@@ -180,6 +235,11 @@ export const runAgent = async (
         toolCalls++;
         tool = typeof event.toolName === 'string' ? event.toolName : undefined;
         notify();
+      } else if (event.type === 'tool_execution_end') {
+        if (typeof event.toolCallId === 'string') {
+          toolTimers.get(event.toolCallId)?.clear();
+          toolTimers.delete(event.toolCallId);
+        }
       } else if (event.type === 'message_end' && isAssistant(event.message)) {
         tokens += messageTokens(event.message);
         notify();
@@ -204,12 +264,13 @@ export const runAgent = async (
     ): RunAgentResult => ({
       status,
       value,
-      usage: { ...usage, durationMs: elapsed() },
+      usage: { ...usage, durationMs: elapsed(), waitedMs: waited() },
       model,
       error,
     });
 
-    if (reason) return done(reason, undefined, stopped().error);
+    const hit = stopReason();
+    if (hit) return done(hit.why, undefined, hit.error);
     if (promptError !== undefined) {
       return done('failed', undefined, messageOf(promptError));
     }
@@ -227,8 +288,9 @@ export const runAgent = async (
     }
     return done('completed', textOf(last));
   } finally {
+    clearTimers();
+    stopTracking();
     finished = true;
-    clearTimeout(timer);
     signal?.removeEventListener('abort', onAbort);
     unsubscribe?.();
     try {

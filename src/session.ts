@@ -29,6 +29,8 @@ export interface ChildSpec {
   noSkills: boolean;
   providerExtensions: Record<string, string>;
   parent: ParentContext;
+  /** A top-level tool call is about to run, after every permission gate. */
+  onToolCall?: (call: { toolCallId: string; toolName: string }) => void;
 }
 
 export interface ChildSession {
@@ -116,6 +118,27 @@ const freezeHook: { name: string; factory: ExtensionFactory } = {
     }));
   },
 };
+
+// Pi emits `tool_execution_start` before extension `tool_call` handlers
+// (permission gates) run. This inline factory loads after every path
+// extension, so its handler fires only once all gates have passed: the real
+// start of the tool. Nested calls are covered by their parent call's timer.
+const toolStartHook = (
+  spec: ChildSpec,
+): { name: string; factory: ExtensionFactory } => ({
+  name: 'pi-agent-runner:tool-start',
+  factory: (api: ExtensionAPI) => {
+    api.on('tool_call', (event) => {
+      if (!event.parentToolCallId) {
+        spec.onToolCall?.({
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+        });
+      }
+      return undefined;
+    });
+  },
+});
 
 type ModelRuntime = Awaited<ReturnType<typeof pi.ModelRuntime.create>>;
 
@@ -211,7 +234,7 @@ const openSession = async (
     noThemes: true,
     noContextFiles: spec.noContextFiles,
     systemPrompt: spec.systemPrompt,
-    extensionFactories: [freezeHook],
+    extensionFactories: [freezeHook, toolStartHook(spec)],
   });
   resetExtensionCacheOnReload(loader);
   await loader.reload();

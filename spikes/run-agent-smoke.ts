@@ -40,6 +40,9 @@ export default function (api: ExtensionAPI) {
         model,
         extensions: packages ? { packages: packages.split(',') } : 'none',
         timeoutMs: timeout ? Number(timeout) : undefined,
+        toolTimeoutMs: process.env.SMOKE_TOOL_TIMEOUT
+          ? Number(process.env.SMOKE_TOOL_TIMEOUT)
+          : undefined,
         signal: controller.signal,
         onUpdate: (u) => updates.push(u),
       });

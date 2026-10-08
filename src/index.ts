@@ -12,3 +12,7 @@ export type {
   ChildSessionFactory,
   ChildSpec,
 } from './session.ts';
+// Call `humanWaitTracker(pi.events)` at extension load so a dialog opened
+// before the first run is also seen.
+export { humanWaitTracker } from './human-wait.ts';
+export type { HumanWaitTracker } from './human-wait.ts';

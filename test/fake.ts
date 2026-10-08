@@ -6,10 +6,31 @@ import type {
 } from '../src/index.ts';
 import type { ParentContext } from '../src/index.ts';
 
-export const parent: ParentContext = {
-  events: { emit: () => {}, on: () => () => {} },
-  ctx: {} as ParentContext['ctx'],
+/** Simple parent bus; every test gets its own so trackers stay isolated. */
+export const fakeBus = (): ParentContext['events'] => {
+  const handlers = new Map<string, Set<(data: unknown) => void>>();
+  return {
+    emit(channel, data) {
+      const set = handlers.get(channel) ?? new Set();
+      for (const h of [...set]) h(data);
+    },
+    on(channel, handler) {
+      const set = handlers.get(channel) ?? new Set();
+      handlers.set(channel, set);
+      set.add(handler);
+      return () => set.delete(handler);
+    },
+  };
 };
+
+export const fakeParent = (
+  events = fakeBus(),
+): ParentContext & { events: ParentContext['events'] } => ({
+  events,
+  ctx: {} as ParentContext['ctx'],
+});
+
+export const parent: ParentContext = fakeParent();
 
 const noop = () => Promise.resolve();
 
@@ -23,6 +44,8 @@ export class FakeSession implements ChildSession {
   promptError: Error | undefined;
   /** Runs inside prompt(); resolve it to end the run. */
   script: (session: FakeSession) => Promise<void> = noop;
+  /** Set by the factory helper: the spec's tool-start callback. */
+  onToolCall: ChildSpec['onToolCall'];
   private listeners = new Set<(e: ChildEvent) => void>();
 
   subscribe(listener: (e: ChildEvent) => void) {
@@ -73,7 +96,10 @@ export const factoryOf = (
     calls,
     create(spec) {
       calls.push(spec);
-      return make(spec);
+      return make(spec).then((session) => {
+        session.onToolCall = spec.onToolCall;
+        return session;
+      });
     },
   };
 };
@@ -81,4 +107,10 @@ export const factoryOf = (
 export const sleep = (ms: number) =>
   new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
+  });
+
+/** Prompt that hangs until the fake is aborted. */
+export const hangUntilAbort = (session: FakeSession) =>
+  new Promise<void>((resolve) => {
+    session.onAbort = resolve;
   });

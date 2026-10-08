@@ -23,18 +23,26 @@ const result = await runAgent({
   model: 'inherit', // or 'provider/id'
   extensions: 'none', // or { packages: ['pi-mcp-adapter'] }
   timeoutMs: 600_000,
+  toolTimeoutMs: 120_000,
   signal,
   onUpdate: ({ turn, tool, tokens }) => {},
 });
 // result: { status, value, usage, model?, error? }
+// usage: { input, output, cacheRead, cacheWrite, cost, turns, toolCalls,
+//          durationMs, waitedMs }
 ```
 
 Statuses: `completed | failed | timed_out | cancelled |
 structured_output_failed`. Implemented now: `completed`, `failed`,
 `timed_out`, `cancelled`. Later: structured output (`result: { kind:
-'structured' }`, T08), per-tool timeout and the permission-prompt pause of
-the run timer (T07), `transcriptPath` (T10). Until then structured results
-fail fast and `toolTimeoutMs` / `transcriptPath` are ignored.
+'structured' }`, T08) and `transcriptPath` (T10). Until then structured
+results fail fast and `transcriptPath` is ignored.
+
+Timeouts: `timeoutMs` limits the whole run; `toolTimeoutMs` limits each
+tool, counted from the moment the tool actually runs (after permission
+gates). Both pause while a person is asked anything permission-related in
+the parent; `usage.waitedMs` is the total time the run timer was paused
+that way.
 
 Behavior the spikes settled:
 
