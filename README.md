@@ -53,6 +53,20 @@ gates). Both pause while a person is asked anything permission-related in
 the parent; `usage.waitedMs` is the total time the run timer was paused
 that way.
 
+Guards: an inline extension loaded before every other one refuses a call
+before any permission gate can open a dialog. It enforces the `tools`
+allowlist (nested calls included), `gitGuard` (default on: blocks `git push`,
+`reset --hard`, `clean -f`, `branch -D`, discarding `checkout`/`restore`,
+`stash drop/clear`; a guardrail, not a sandbox) and `readRoots` (paths
+outside cwd and the roots are refused). `maxDepth` (default 1) stops a child
+from starting its own child; the depth is counted across package copies.
+
+Permission asks: `permissionAsks: 'forward'` (default) registers the child
+with pi-permission-system: an `ask` opens a dialog in the parent and the
+timers pause meanwhile. `'deny'` leaves the child unregistered, so it has no
+UI and an `ask` is refused at once; only explicit `allow` passes. Use it for
+runs nobody is watching.
+
 Behavior the spikes settled:
 
 - Model runtime: a fresh `ModelRuntime` plus the parent's providers.

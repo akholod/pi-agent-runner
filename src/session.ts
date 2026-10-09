@@ -7,6 +7,8 @@ import type {
   ExtensionFactory,
 } from '@earendil-works/pi-coding-agent';
 import { Unsafe as unsafe } from 'typebox';
+import { guardDecision } from './guards.ts';
+import type { GuardConfig } from './guards.ts';
 import { SUBMIT_RESULT_TOOL, toolParameters } from './structured.ts';
 import type { Submission } from './structured.ts';
 import type { ExtensionMode, ParentContext, ThinkingLevel } from './types.ts';
@@ -32,6 +34,10 @@ export interface ChildSpec {
   noSkills: boolean;
   providerExtensions: Record<string, string>;
   parent: ParentContext;
+  /** Refusals applied to every tool call, nested ones included. */
+  guard: GuardConfig;
+  /** Register with the parent's pi-permission-system so asks forward. */
+  forwardAsks: boolean;
   /** A top-level tool call is about to run, after every permission gate. */
   onToolCall?: (call: { toolCallId: string; toolName: string }) => void;
   /** Registers `submit_result` in the child; the run ends on a valid call. */
@@ -76,6 +82,35 @@ export const DEFAULT_PROVIDER_EXTENSIONS: Record<string, string> = {
   'claude-bridge': 'pi-claude-bridge',
 };
 
+const GUARD_NAME = 'pi-agent-runner:guard';
+const GUARD_PATH = `<inline:${GUARD_NAME}>`;
+const TAIL_NAMES = [
+  'pi-agent-runner:freeze-prompt',
+  'pi-agent-runner:tool-start',
+  'pi-agent-runner:submit-result',
+];
+
+/**
+ * Handlers run in extension order and the first block wins. The guard goes
+ * first so it refuses before permission gates can ask a person about a call
+ * that would be refused anyway. The freeze and tool-start hooks go last:
+ * freeze must have the final word on the prompt, and tool-start must fire
+ * only after every gate passed.
+ */
+export const orderRunnerExtensions = <T extends { path: string }>(
+  extensions: T[],
+): T[] => {
+  const tail = TAIL_NAMES.map((name) => `<inline:${name}>`);
+  const guard = extensions.filter((e) => e.path === GUARD_PATH);
+  const last = tail.flatMap((path) =>
+    extensions.filter((e) => e.path === path),
+  );
+  const others = extensions.filter(
+    (e) => e.path !== GUARD_PATH && !tail.includes(e.path),
+  );
+  return [...guard, ...others, ...last];
+};
+
 export const isFromPackage = (resource: ResolvedExtension, name: string) => {
   const { source } = resource.metadata;
   return (
@@ -114,6 +149,21 @@ export const selectExtensionPaths = (
   }
   return paths;
 };
+
+// Refuses calls the child must not make (see guards.ts). It is ordered
+// before every other extension, so a refused call never reaches a
+// permission gate and never opens a dialog.
+const guardHook = (
+  spec: ChildSpec,
+): { name: string; factory: ExtensionFactory } => ({
+  name: GUARD_NAME,
+  factory: (api: ExtensionAPI) => {
+    api.on('tool_call', (event) => {
+      const reason = guardDecision(spec.guard, event);
+      return reason ? { block: true, reason } : undefined;
+    });
+  },
+});
 
 // A returned prompt is frozen for the run, so claude-bridge's prompt capture
 // matches the request. Inline factories load after path extensions, which
@@ -259,7 +309,7 @@ const openSession = async (
     provider,
   );
 
-  const inlineFactories = [freezeHook, toolStartHook(spec)];
+  const inlineFactories = [guardHook(spec), freezeHook, toolStartHook(spec)];
   if (spec.resultTool) inlineFactories.push(submitResultTool(spec.resultTool));
 
   const loader = new pi.DefaultResourceLoader({
@@ -279,6 +329,10 @@ const openSession = async (
     noContextFiles: spec.noContextFiles,
     systemPrompt: spec.systemPrompt,
     extensionFactories: inlineFactories,
+    extensionsOverride: (base) => ({
+      ...base,
+      extensions: orderRunnerExtensions(base.extensions),
+    }),
   });
   resetExtensionCacheOnReload(loader);
   await loader.reload();
@@ -321,10 +375,7 @@ const openSession = async (
     modelRuntime,
     model,
     thinkingLevel,
-    tools:
-      spec.tools && spec.resultTool
-        ? [...new Set([...spec.tools, SUBMIT_RESULT_TOOL])]
-        : spec.tools,
+    tools: spec.guard.allowedTools,
     resourceLoader: loader,
     sessionManager: pi.SessionManager.inMemory(cwd),
     settingsManager,
@@ -351,22 +402,27 @@ const openSession = async (
         }
       } finally {
         session.dispose();
-        parent.events.emit(CHANNEL_DISPOSED, { sessionId });
+        if (spec.forwardAsks) {
+          parent.events.emit(CHANNEL_DISPOSED, { sessionId });
+        }
       }
     })();
     return disposing;
   };
 
   // The parent's permission forwarder needs to know the child before its
-  // extensions start asking for things.
-  parent.events.emit(CHANNEL_SESSION_CREATED, registration);
+  // extensions start asking for things. An unregistered child decides
+  // alone, and without a UI every ask becomes an immediate refusal.
+  if (spec.forwardAsks) {
+    parent.events.emit(CHANNEL_SESSION_CREATED, registration);
+  }
   try {
     await session.bindExtensions({ mode: 'print' });
   } catch (error) {
     await dispose().catch(() => {});
     throw error;
   }
-  parent.events.emit(CHANNEL_BOUND, registration);
+  if (spec.forwardAsks) parent.events.emit(CHANNEL_BOUND, registration);
 
   return {
     sessionId,

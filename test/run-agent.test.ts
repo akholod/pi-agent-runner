@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { runAgent } from '../src/index.ts';
-import type { RunAgentOptions, RunUpdate } from '../src/index.ts';
+import type {
+  RunAgentOptions,
+  RunAgentResult,
+  RunUpdate,
+} from '../src/index.ts';
 import {
   PERMISSION_DECISION_CHANNEL,
   PERMISSION_PROMPT_CHANNEL,
@@ -569,4 +573,98 @@ test('structured: submit after the run finished is rejected', async () => {
     error: 'the run has ended',
   });
   assert.deepEqual(result.value, { n: 1 });
+});
+
+test('guard config: defaults, passthrough, structured list', async () => {
+  const session = new FakeSession();
+  session.messages.push(assistant('ok'));
+  const factory = factoryOf(async () => session);
+  await runAgent(base(), { factory });
+  assert.deepEqual(factory.calls[0].guard, {
+    allowedTools: undefined,
+    git: true,
+    readRoots: undefined,
+    cwd: '/tmp',
+  });
+  await runAgent(base({ tools: ['read'], readRoots: ['/data'] }), {
+    factory,
+  });
+  assert.deepEqual(factory.calls[1].guard.allowedTools, ['read']);
+  assert.deepEqual(factory.calls[1].guard.readRoots, ['/data']);
+  const structured = new FakeSession();
+  structured.script = async (s) => {
+    submit(s, { n: 1 });
+  };
+  const second = factoryOf(async () => structured);
+  await runAgent(structuredOpts({ tools: ['read'] }), { factory: second });
+  assert.deepEqual(second.calls[0].guard.allowedTools, [
+    'read',
+    'submit_result',
+  ]);
+});
+
+test('permissionAsks: forward by default, deny on request', async () => {
+  const session = new FakeSession();
+  session.messages.push(assistant('ok'));
+  const factory = factoryOf(async () => session);
+  await runAgent(base(), { factory });
+  await runAgent(base({ permissionAsks: 'deny' }), { factory });
+  assert.equal(factory.calls[0].forwardAsks, true);
+  assert.equal(factory.calls[1].forwardAsks, false);
+});
+
+test('guard config: gitGuard false turns the git guard off', async () => {
+  const session = new FakeSession();
+  session.messages.push(assistant('ok'));
+  const factory = factoryOf(async () => session);
+  await runAgent(base({ gitGuard: false }), { factory });
+  assert.equal(factory.calls[0].guard.git, false);
+});
+
+const depthStore = (globalThis as Record<symbol, unknown>)[
+  Symbol.for('pi-agent-runner:depth')
+] as { getStore(): number | undefined };
+
+const nested = async (maxDepth: number | undefined) => {
+  const inner: RunAgentResult[] = [];
+  let seen: number | undefined;
+  let created = 0;
+  const factory: ReturnType<typeof factoryOf> = factoryOf(async () => {
+    const session = new FakeSession();
+    session.messages.push(assistant('ok'));
+    if (created++ === 0) {
+      session.script = async () => {
+        seen = depthStore.getStore();
+        inner.push(await runAgent(base({ maxDepth }), { factory }));
+      };
+    }
+    return session;
+  });
+  const outer = await runAgent(base({ maxDepth }), { factory });
+  return { outer, inner: inner[0], seen };
+};
+
+test('depth: a child cannot start its own child by default', async () => {
+  const { outer, inner, seen } = await nested(undefined);
+  assert.equal(seen, 1);
+  assert.equal(inner.status, 'failed');
+  assert.equal(inner.error, 'nesting limit reached: depth 1 >= maxDepth 1');
+  assert.equal(outer.status, 'completed');
+  assert.equal(depthStore.getStore() ?? 0, 0);
+});
+
+test('depth: maxDepth 2 lets the inner run succeed', async () => {
+  const { outer, inner } = await nested(2);
+  assert.equal(inner.status, 'completed');
+  assert.equal(outer.status, 'completed');
+  assert.equal(depthStore.getStore() ?? 0, 0);
+});
+
+test('depth: an aborted signal still reports cancelled', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const result = await runAgent(base({ signal: controller.signal }), {
+    factory: factoryOf(async () => new FakeSession()),
+  });
+  assert.equal(result.status, 'cancelled');
 });

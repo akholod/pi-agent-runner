@@ -61,6 +61,31 @@ export interface RunAgentOptions {
    * permission gates); paused while a person is asked.
    */
   toolTimeoutMs?: number;
+  /**
+   * Default true. Blocks destructive git commands (push, reset --hard,
+   * clean -f, branch -D, discarding checkout/restore, stash drop/clear) in
+   * the child's bash. Turn off for an agent the user explicitly lets push.
+   */
+  gitGuard?: boolean;
+  /**
+   * Paths (besides cwd) that path-taking tools may touch; anything else is
+   * refused at once instead of opening a permission dialog. Unset = no
+   * restriction.
+   */
+  readRoots?: string[];
+  /**
+   * How deep runAgent may nest. Default 1: a child cannot start its own
+   * child.
+   */
+  maxDepth?: number;
+  /**
+   * What a permission `ask` means for this child. `forward` (default): the
+   * ask opens a dialog in the parent and the timers pause until a person
+   * answers. `deny`: the child is not registered with pi-permission-system
+   * as a subagent, so it decides alone, has no UI and refuses at once; only
+   * explicit `allow` rules pass. For runs nobody is watching.
+   */
+  permissionAsks?: 'deny' | 'forward';
   signal?: AbortSignal;
   onUpdate?: (update: RunUpdate) => void;
   /** Save the child transcript as JSONL. */

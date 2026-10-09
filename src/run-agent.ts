@@ -1,8 +1,10 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   DEFAULT_PROVIDER_EXTENSIONS,
   createPiSessionFactory,
 } from './session.ts';
 import {
+  SUBMIT_RESULT_TOOL,
   correctionPrompt,
   createResultCollector,
   taskWithInstructions,
@@ -42,6 +44,12 @@ type Reason = 'timed_out' | 'cancelled' | 'structured_output_failed';
 
 // Invalid submissions tolerated: the first try plus one retry.
 const MAX_INVALID = 2;
+
+// Spiral and Opium each load their own copy of this package, so the depth
+// lives on globalThis: nesting is counted across copies.
+const DEPTH_KEY = Symbol.for('pi-agent-runner:depth');
+const depthStore = ((globalThis as Record<symbol, unknown>)[DEPTH_KEY] ??=
+  new AsyncLocalStorage<number>()) as AsyncLocalStorage<number>;
 
 let defaultFactory: ChildSessionFactory | undefined;
 
@@ -94,9 +102,9 @@ const sumUsage = (assistants: AssistantMessage[]) => {
   return usage;
 };
 
-export const runAgent = async (
+const runSession = async (
   options: RunAgentOptions,
-  deps: { factory?: ChildSessionFactory } = {},
+  deps: { factory?: ChildSessionFactory },
 ): Promise<RunAgentResult> => {
   const startedAt = Date.now();
   const elapsed = () => Date.now() - startedAt;
@@ -218,6 +226,16 @@ export const runAgent = async (
         providerExtensions:
           options.providerExtensions ?? DEFAULT_PROVIDER_EXTENSIONS,
         parent: options.parent,
+        guard: {
+          allowedTools:
+            options.tools && structured
+              ? [...new Set([...options.tools, SUBMIT_RESULT_TOOL])]
+              : options.tools,
+          git: options.gitGuard ?? true,
+          readRoots: options.readRoots,
+          cwd: options.cwd,
+        },
+        forwardAsks: options.permissionAsks !== 'deny',
         onToolCall,
         resultTool:
           structured && collector
@@ -354,4 +372,24 @@ export const runAgent = async (
       // Cleanup failure must not change the outcome.
     }
   }
+};
+
+export const runAgent = (
+  options: RunAgentOptions,
+  deps: { factory?: ChildSessionFactory } = {},
+): Promise<RunAgentResult> => {
+  // An aborted signal reports `cancelled` before anything else.
+  if (options.signal?.aborted) return runSession(options, deps);
+  const current = depthStore.getStore() ?? 0;
+  const max = options.maxDepth ?? 1;
+  if (current >= max) {
+    return Promise.resolve({
+      status: 'failed',
+      value: undefined,
+      usage: emptyUsage(0),
+      error: `nesting limit reached: depth ${current} >= maxDepth ${max}`,
+    });
+  }
+  // Tool executions in the child run inside this scope and see the new depth.
+  return depthStore.run(current + 1, () => runSession(options, deps));
 };

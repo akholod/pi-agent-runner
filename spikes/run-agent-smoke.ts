@@ -46,6 +46,9 @@ export default function (api: ExtensionAPI) {
         toolTimeoutMs: process.env.SMOKE_TOOL_TIMEOUT
           ? Number(process.env.SMOKE_TOOL_TIMEOUT)
           : undefined,
+        readRoots: process.env.SMOKE_READ_ROOTS?.split(','),
+        gitGuard: process.env.SMOKE_GIT_GUARD !== '0',
+        permissionAsks: process.env.SMOKE_ASKS === 'deny' ? 'deny' : 'forward',
         signal: controller.signal,
         onUpdate: (u) => updates.push(u),
       });

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   isDenied,
+  orderRunnerExtensions,
   isFromPackage,
   providerOf,
   selectExtensionPaths,
@@ -75,4 +76,27 @@ test('provider package is added to requested ones without duplicates', () => {
 test('a denied package is not loaded even as a provider extension', () => {
   const picked = selectExtensionPaths(all, 'none', { x: 'pi-subagents' }, 'x');
   assert.deepEqual(picked, []);
+});
+
+test('orderRunnerExtensions: guard first, runner hooks last in order', () => {
+  const ext = (path: string) => ({ path });
+  const input = [
+    ext('<inline:pi-agent-runner:freeze-prompt>'),
+    ext('<inline:pi-agent-runner:tool-start>'),
+    ext('/a/permission.ts'),
+    ext('<inline:pi-agent-runner:guard>'),
+    ext('<inline:pi-agent-runner:submit-result>'),
+    ext('/b/other.ts'),
+  ];
+  assert.deepEqual(
+    orderRunnerExtensions(input).map((e) => e.path),
+    [
+      '<inline:pi-agent-runner:guard>',
+      '/a/permission.ts',
+      '/b/other.ts',
+      '<inline:pi-agent-runner:freeze-prompt>',
+      '<inline:pi-agent-runner:tool-start>',
+      '<inline:pi-agent-runner:submit-result>',
+    ],
+  );
 });

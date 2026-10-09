@@ -17,3 +17,5 @@ export type {
 // before the first run is also seen.
 export { humanWaitTracker } from './human-wait.ts';
 export type { HumanWaitTracker } from './human-wait.ts';
+export { dangerousGitCommand, guardDecision } from './guards.ts';
+export type { GuardConfig } from './guards.ts';
