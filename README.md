@@ -90,7 +90,13 @@ npm install
 npm run typecheck
 npm run lint
 npm test
+npm run test:live  # real models, ~1 min; see below
 ```
+
+`test:live` runs a text child, a structured child, a cancelled child and a
+git-guard check against every model in `RUNNER_LIVE_MODELS` (default
+`openai-codex/gpt-6-luna,claude-bridge/claude-sonnet-5-5`), with the
+operator's `~/.pi/agent` auth. `npm test` skips it.
 
 `spikes/` holds the throwaway phase 0 spikes; it is excluded from lint and
 typecheck. Load one into Pi with `pi -e spikes/child.ts`.

@@ -19,7 +19,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "lint": "eslint . && prettier --check \"**/*.ts\" \"**/*.json\" \"**/*.md\"",
-    "fix": "eslint . --fix && prettier --write \"**/*.ts\" \"**/*.json\" \"**/*.md\""
+    "fix": "eslint . --fix && prettier --write \"**/*.ts\" \"**/*.json\" \"**/*.md\"",
+    "test:live": "RUNNER_LIVE=1 node --experimental-strip-types --test --test-concurrency=1 test/live.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
