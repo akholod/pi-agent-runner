@@ -39,6 +39,9 @@ export default function (api: ExtensionAPI) {
         tools: process.env.SMOKE_TOOLS?.split(',') ?? ['read', 'ls'],
         model,
         extensions: packages ? { packages: packages.split(',') } : 'none',
+        result: process.env.SMOKE_SCHEMA
+          ? { kind: 'structured', schema: JSON.parse(process.env.SMOKE_SCHEMA) }
+          : { kind: 'text' },
         timeoutMs: timeout ? Number(timeout) : undefined,
         toolTimeoutMs: process.env.SMOKE_TOOL_TIMEOUT
           ? Number(process.env.SMOKE_TOOL_TIMEOUT)

@@ -14,6 +14,7 @@ import {
   hangUntilAbort,
   parent,
   sleep,
+  submit,
 } from './fake.ts';
 
 const base = (extra: Partial<RunAgentOptions> = {}): RunAgentOptions => ({
@@ -108,17 +109,6 @@ test('failed: create rejects, nothing to dispose', async () => {
   const result = await runAgent(base(), { factory });
   assert.equal(result.status, 'failed');
   assert.equal(result.error, 'no model');
-});
-
-test('failed: structured result is rejected without a session', async () => {
-  const factory = factoryOf(async () => new FakeSession());
-  const result = await runAgent(
-    base({ result: { kind: 'structured', schema: {} } }),
-    { factory },
-  );
-  assert.equal(result.status, 'failed');
-  assert.match(result.error ?? '', /T08/);
-  assert.equal(factory.calls.length, 0);
 });
 
 test('timed_out: prompt hangs until abort', async () => {
@@ -362,4 +352,221 @@ test('cancelled during startup, tool, and final answer', async () => {
     session.onToolCall?.({ toolCallId: 'late', toolName: 'read' });
     assert.equal(updates.length, seen);
   }
+});
+
+const structuredOpts = (extra: Partial<RunAgentOptions> = {}) =>
+  base({
+    result: {
+      kind: 'structured',
+      schema: {
+        type: 'object',
+        required: ['n'],
+        properties: { n: { type: 'number' } },
+      },
+    },
+    ...extra,
+  });
+
+test('structured: valid submit completes with the payload', async () => {
+  const session = new FakeSession();
+  session.script = async (s) => {
+    assert.deepEqual(submit(s, { n: 1 }), { accepted: true });
+    s.messages.push(assistant('prose, ignored'));
+  };
+  const factory = factoryOf(async () => session);
+  const result = await runAgent(structuredOpts({ tools: ['read'] }), {
+    factory,
+  });
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(result.value, { n: 1 });
+  assert.equal(session.prompts.length, 1);
+  assert.match(
+    session.prompts[0],
+    /^do it\n\nWhen you are done, call the `submit_result` tool/,
+  );
+  assert.deepEqual(factory.calls[0].tools, ['read']);
+  assert.equal(factory.calls[0].systemPrompt, 'sys');
+  assert.equal(session.disposes, 1);
+});
+
+test('structured: invalid then fixed completes with 2nd value', async () => {
+  const session = new FakeSession();
+  let first: unknown;
+  session.script = async (s) => {
+    first = submit(s, { n: 'x' });
+    submit(s, { n: 2 });
+    s.messages.push(assistant('done'));
+  };
+  const result = await runAgent(structuredOpts(), {
+    factory: factoryOf(async () => session),
+  });
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(result.value, { n: 2 });
+  const rejected = first as { accepted: false; error: string };
+  assert.equal(rejected.accepted, false);
+  assert.match(rejected.error, /\/n: /);
+});
+
+test('structured: two invalid submits fail and abort', async () => {
+  const session = new FakeSession();
+  session.script = async (s) => {
+    submit(s, { n: 'x' });
+    submit(s, { n: 'y' });
+    s.messages.push(assistant('oops'));
+  };
+  const result = await runAgent(structuredOpts(), {
+    factory: factoryOf(async () => session),
+  });
+  assert.equal(result.status, 'structured_output_failed');
+  assert.equal(result.value, undefined);
+  assert.match(result.error ?? '', /^invalid result: \/n: /);
+  assert.equal(session.aborts, 1);
+  assert.equal(session.prompts.length, 1);
+});
+
+test('structured: no call, one correction, then valid', async () => {
+  const session = new FakeSession();
+  session.script = async (s, turn) => {
+    s.messages.push(assistant('prose'));
+    if (turn === 2) submit(s, { n: 3 });
+  };
+  const result = await runAgent(structuredOpts(), {
+    factory: factoryOf(async () => session),
+  });
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(result.value, { n: 3 });
+  assert.equal(session.prompts.length, 2);
+  assert.equal(
+    session.prompts[1],
+    'You have not submitted a valid result. Call `submit_result` now ' +
+      'with `value` matching the schema.',
+  );
+});
+
+test('structured: still nothing after the correction fails', async () => {
+  const session = new FakeSession();
+  session.script = async (s) => {
+    s.messages.push(assistant('prose'));
+  };
+  const result = await runAgent(structuredOpts(), {
+    factory: factoryOf(async () => session),
+  });
+  assert.equal(result.status, 'structured_output_failed');
+  assert.equal(result.error, 'no valid submit_result call');
+  assert.equal(session.prompts.length, 2);
+});
+
+test('structured: one invalid, then nothing after correction', async () => {
+  const session = new FakeSession();
+  session.script = async (s, turn) => {
+    if (turn === 1) submit(s, { n: 'x' });
+    s.messages.push(assistant('prose'));
+  };
+  const result = await runAgent(structuredOpts(), {
+    factory: factoryOf(async () => session),
+  });
+  assert.equal(result.status, 'structured_output_failed');
+  assert.match(result.error ?? '', /^no valid submit_result call: \/n: /);
+  assert.equal(session.prompts.length, 2);
+  assert.match(session.prompts[1], /\nLast error: \/n: /);
+});
+
+test('structured: second valid submit is rejected, first kept', async () => {
+  const session = new FakeSession();
+  let second: unknown;
+  session.script = async (s) => {
+    submit(s, { n: 1 });
+    second = submit(s, { n: 2 });
+  };
+  const result = await runAgent(structuredOpts(), {
+    factory: factoryOf(async () => session),
+  });
+  assert.deepEqual(result.value, { n: 1 });
+  assert.deepEqual(second, {
+    accepted: false,
+    error: 'result already submitted; the first one is final',
+  });
+});
+
+test('structured: error message after a valid submit is ignored', async () => {
+  const session = new FakeSession();
+  session.script = async (s) => {
+    submit(s, { n: 1 });
+    s.messages.push(assistant('', { stopReason: 'error', errorMessage: 'x' }));
+  };
+  const result = await runAgent(structuredOpts(), {
+    factory: factoryOf(async () => session),
+  });
+  assert.equal(result.status, 'completed');
+});
+
+test('structured: prompt error fails', async () => {
+  const session = new FakeSession();
+  session.promptError = new Error('boom');
+  const result = await runAgent(structuredOpts(), {
+    factory: factoryOf(async () => session),
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.error, 'boom');
+  assert.equal(session.prompts.length, 1);
+});
+
+test('structured: invalid schema fails without a session', async () => {
+  const factory = factoryOf(async () => new FakeSession());
+  const result = await runAgent(
+    base({
+      result: {
+        kind: 'structured',
+        schema: { type: 'string', pattern: '(' },
+      },
+    }),
+    { factory },
+  );
+  assert.equal(result.status, 'failed');
+  assert.match(result.error ?? '', /^invalid result schema: /);
+  assert.equal(factory.calls.length, 0);
+});
+
+test('structured: timeout during the correction turn wins', async () => {
+  const session = new FakeSession();
+  session.script = (s, turn) => {
+    s.messages.push(assistant('prose'));
+    return turn === 2 ? hangUntilAbort(s) : Promise.resolve();
+  };
+  const result = await runAgent(structuredOpts({ timeoutMs: 30 }), {
+    factory: factoryOf(async () => session),
+  });
+  assert.equal(result.status, 'timed_out');
+  assert.equal(session.prompts.length, 2);
+});
+
+test('structured: cancel during the correction turn wins', async () => {
+  const session = new FakeSession();
+  const controller = new AbortController();
+  session.script = (s, turn) => {
+    s.messages.push(assistant('prose'));
+    if (turn !== 2) return Promise.resolve();
+    setTimeout(() => controller.abort(), 10);
+    return hangUntilAbort(s);
+  };
+  const result = await runAgent(structuredOpts({ signal: controller.signal }), {
+    factory: factoryOf(async () => session),
+  });
+  assert.equal(result.status, 'cancelled');
+});
+
+test('structured: submit after the run finished is rejected', async () => {
+  const session = new FakeSession();
+  session.script = async (s) => {
+    submit(s, { n: 1 });
+  };
+  const result = await runAgent(structuredOpts(), {
+    factory: factoryOf(async () => session),
+  });
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(submit(session, { n: 2 }), {
+    accepted: false,
+    error: 'the run has ended',
+  });
+  assert.deepEqual(result.value, { n: 1 });
 });

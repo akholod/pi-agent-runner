@@ -6,6 +6,9 @@ import type {
   ExtensionAPI,
   ExtensionFactory,
 } from '@earendil-works/pi-coding-agent';
+import { Unsafe as unsafe } from 'typebox';
+import { SUBMIT_RESULT_TOOL, toolParameters } from './structured.ts';
+import type { Submission } from './structured.ts';
 import type { ExtensionMode, ParentContext, ThinkingLevel } from './types.ts';
 
 export const CHANNEL_SESSION_CREATED = 'subagents:child:session-created';
@@ -31,6 +34,11 @@ export interface ChildSpec {
   parent: ParentContext;
   /** A top-level tool call is about to run, after every permission gate. */
   onToolCall?: (call: { toolCallId: string; toolName: string }) => void;
+  /** Registers `submit_result` in the child; the run ends on a valid call. */
+  resultTool?: {
+    schema: Record<string, unknown>;
+    onSubmit: (value: unknown) => Submission;
+  };
 }
 
 export interface ChildSession {
@@ -140,6 +148,39 @@ const toolStartHook = (
   },
 });
 
+const submitResultTool = (
+  resultTool: NonNullable<ChildSpec['resultTool']>,
+): { name: string; factory: ExtensionFactory } => ({
+  name: 'pi-agent-runner:submit-result',
+  factory: (api: ExtensionAPI) => {
+    api.registerTool({
+      name: SUBMIT_RESULT_TOOL,
+      label: 'Submit result',
+      description: 'Submit the final structured result. This ends the run.',
+      exposure: 'model-only',
+      parameters: unsafe<{ value: unknown }>(toolParameters(resultTool.schema)),
+      execute(_toolCallId, params) {
+        const submitted = resultTool.onSubmit(params.value);
+        if (!submitted.accepted) throw new Error(submitted.error);
+        // No `terminate: true`: ending the loop inside the tool leaves
+        // pi-claude-bridge's Claude Code query open, and its process keeps
+        // the parent alive. One short closing reply ends the turn normally.
+        return Promise.resolve({
+          content: [
+            {
+              type: 'text' as const,
+              text:
+                'Result recorded. Do not call more tools; ' +
+                'reply with one word: done.',
+            },
+          ],
+          details: {},
+        });
+      },
+    });
+  },
+});
+
 type ModelRuntime = Awaited<ReturnType<typeof pi.ModelRuntime.create>>;
 
 // Registers what the loaded extensions queued; returns the claimed ids.
@@ -218,6 +259,9 @@ const openSession = async (
     provider,
   );
 
+  const inlineFactories = [freezeHook, toolStartHook(spec)];
+  if (spec.resultTool) inlineFactories.push(submitResultTool(spec.resultTool));
+
   const loader = new pi.DefaultResourceLoader({
     cwd,
     agentDir,
@@ -234,7 +278,7 @@ const openSession = async (
     noThemes: true,
     noContextFiles: spec.noContextFiles,
     systemPrompt: spec.systemPrompt,
-    extensionFactories: [freezeHook, toolStartHook(spec)],
+    extensionFactories: inlineFactories,
   });
   resetExtensionCacheOnReload(loader);
   await loader.reload();
@@ -277,7 +321,10 @@ const openSession = async (
     modelRuntime,
     model,
     thinkingLevel,
-    tools: spec.tools,
+    tools:
+      spec.tools && spec.resultTool
+        ? [...new Set([...spec.tools, SUBMIT_RESULT_TOOL])]
+        : spec.tools,
     resourceLoader: loader,
     sessionManager: pi.SessionManager.inMemory(cwd),
     settingsManager,

@@ -2,6 +2,12 @@ import {
   DEFAULT_PROVIDER_EXTENSIONS,
   createPiSessionFactory,
 } from './session.ts';
+import {
+  correctionPrompt,
+  createResultCollector,
+  taskWithInstructions,
+  validator,
+} from './structured.ts';
 import { humanWaitTracker } from './human-wait.ts';
 import { createPausableTimer } from './timer.ts';
 import type { PausableTimer } from './timer.ts';
@@ -32,7 +38,10 @@ interface AssistantMessage {
   };
 }
 
-type Reason = 'timed_out' | 'cancelled';
+type Reason = 'timed_out' | 'cancelled' | 'structured_output_failed';
+
+// Invalid submissions tolerated: the first try plus one retry.
+const MAX_INVALID = 2;
 
 let defaultFactory: ChildSessionFactory | undefined;
 
@@ -101,14 +110,21 @@ export const runAgent = async (
       error: 'aborted before start',
     };
   }
-  if (options.result?.kind === 'structured') {
+  const structured =
+    options.result?.kind === 'structured' ? options.result.schema : undefined;
+  const checker = structured ? validator(structured) : undefined;
+  if (checker?.schemaError) {
     return {
       status: 'failed',
       value: undefined,
       usage: emptyUsage(0),
-      error: 'structured output is not implemented yet (T08)',
+      error: checker.schemaError,
     };
   }
+  const collector =
+    structured && checker
+      ? createResultCollector(structured, checker.validate)
+      : undefined;
 
   const factory = deps.factory ?? (defaultFactory ??= createPiSessionFactory());
   let reason: { why: Reason; error: string } | undefined;
@@ -180,10 +196,7 @@ export const runAgent = async (
     error,
   });
   const stopped = () =>
-    outcome(
-      reason?.why === 'timed_out' ? 'timed_out' : 'cancelled',
-      reason?.error ?? 'aborted',
-    );
+    outcome(reason?.why ?? 'cancelled', reason?.error ?? 'aborted');
 
   const onAbort = () => stop('cancelled', 'aborted');
   signal?.addEventListener('abort', onAbort, { once: true });
@@ -206,6 +219,25 @@ export const runAgent = async (
           options.providerExtensions ?? DEFAULT_PROVIDER_EXTENSIONS,
         parent: options.parent,
         onToolCall,
+        resultTool:
+          structured && collector
+            ? {
+                schema: structured,
+                onSubmit: (value) => {
+                  if (finished || reason) {
+                    return { accepted: false, error: 'the run has ended' };
+                  }
+                  const submitted = collector.submit(value);
+                  if (collector.invalidCount >= MAX_INVALID) {
+                    stop(
+                      'structured_output_failed',
+                      `invalid result: ${collector.lastError}`,
+                    );
+                  }
+                  return submitted;
+                },
+              }
+            : undefined,
       });
     } catch (error) {
       if (reason) return stopped();
@@ -247,10 +279,22 @@ export const runAgent = async (
     });
 
     let promptError: unknown;
-    try {
-      await session.prompt(options.task);
-    } catch (error) {
-      promptError = error;
+    const send = async (text: string) => {
+      try {
+        await session?.prompt(text);
+      } catch (error) {
+        promptError = error;
+      }
+    };
+    await send(collector ? taskWithInstructions(options.task) : options.task);
+    // One correction turn, under the same run timer.
+    if (
+      collector &&
+      !collector.hasValue &&
+      !reason &&
+      promptError === undefined
+    ) {
+      await send(correctionPrompt(collector.lastError));
     }
 
     const assistants = session.messages.filter(isAssistant);
@@ -273,6 +317,17 @@ export const runAgent = async (
     if (hit) return done(hit.why, undefined, hit.error);
     if (promptError !== undefined) {
       return done('failed', undefined, messageOf(promptError));
+    }
+    if (collector) {
+      // A trailing error message after a valid submit does not matter: the
+      // result is already in hand.
+      if (collector.hasValue) return done('completed', collector.value);
+      const detail = collector.lastError ? `: ${collector.lastError}` : '';
+      return done(
+        'structured_output_failed',
+        undefined,
+        `no valid submit_result call${detail}`,
+      );
     }
     if (
       !last ||

@@ -43,7 +43,11 @@ export class FakeSession implements ChildSession {
   disposeError: Error | undefined;
   promptError: Error | undefined;
   /** Runs inside prompt(); resolve it to end the run. */
-  script: (session: FakeSession) => Promise<void> = noop;
+  script: (session: FakeSession, prompt: number) => Promise<void> = noop;
+  /** Every text passed to prompt(), in order. */
+  prompts: string[] = [];
+  /** Set by the factory helper: the spec the session was created with. */
+  spec: ChildSpec | undefined;
   /** Set by the factory helper: the spec's tool-start callback. */
   onToolCall: ChildSpec['onToolCall'];
   private listeners = new Set<(e: ChildEvent) => void>();
@@ -55,8 +59,9 @@ export class FakeSession implements ChildSession {
   emit(event: ChildEvent) {
     for (const l of [...this.listeners]) l(event);
   }
-  async prompt() {
-    await this.script(this);
+  async prompt(text: string) {
+    this.prompts.push(text);
+    await this.script(this, this.prompts.length);
     if (this.promptError) throw this.promptError;
   }
   async abort() {
@@ -98,10 +103,18 @@ export const factoryOf = (
       calls.push(spec);
       return make(spec).then((session) => {
         session.onToolCall = spec.onToolCall;
+        session.spec = spec;
         return session;
       });
     },
   };
+};
+
+/** What the model's `submit_result` call does, as the tool would run it. */
+export const submit = (session: FakeSession, value: unknown) => {
+  const resultTool = session.spec?.resultTool;
+  if (!resultTool) throw new Error('no resultTool in spec');
+  return resultTool.onSubmit(value);
 };
 
 export const sleep = (ms: number) =>

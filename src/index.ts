@@ -1,5 +1,6 @@
 export * from './types.ts';
 export { runAgent } from './run-agent.ts';
+export { SUBMIT_RESULT_TOOL } from './structured.ts';
 export {
   createPiSessionFactory,
   CHANNEL_SESSION_CREATED,

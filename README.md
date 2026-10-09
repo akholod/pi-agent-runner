@@ -33,10 +33,19 @@ const result = await runAgent({
 ```
 
 Statuses: `completed | failed | timed_out | cancelled |
-structured_output_failed`. Implemented now: `completed`, `failed`,
-`timed_out`, `cancelled`. Later: structured output (`result: { kind:
-'structured' }`, T08) and `transcriptPath` (T10). Until then structured
-results fail fast and `transcriptPath` is ignored.
+structured_output_failed`. `transcriptPath` (T10) is not implemented yet and
+is ignored.
+
+Structured output: pass `result: { kind: 'structured', schema }` (a JSON
+Schema). The child gets a `submit_result` tool (`SUBMIT_RESULT_TOOL`) whose
+`value` must match the schema, and the task gets an instruction to call it;
+the system prompt is never touched. On `completed`, `value` is the validated
+payload, not the text. The first valid call is final; later calls are
+rejected. An invalid call returns the validation errors to the child. The run
+ends with `structured_output_failed` after a second invalid call, or if the
+child finishes without a valid call even after one correction prompt (the
+correction turn runs under the same `timeoutMs`). An invalid schema fails the
+run before any session is created.
 
 Timeouts: `timeoutMs` limits the whole run; `toolTimeoutMs` limits each
 tool, counted from the moment the tool actually runs (after permission
