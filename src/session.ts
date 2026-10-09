@@ -34,6 +34,8 @@ export interface ChildSpec {
   noSkills: boolean;
   providerExtensions: Record<string, string>;
   parent: ParentContext;
+  /** Persist the session to this file; unset keeps it in memory. */
+  sessionFile?: string;
   /** Refusals applied to every tool call, nested ones included. */
   guard: GuardConfig;
   /** Register with the parent's pi-permission-system so asks forward. */
@@ -377,7 +379,9 @@ const openSession = async (
     thinkingLevel,
     tools: spec.guard.allowedTools,
     resourceLoader: loader,
-    sessionManager: pi.SessionManager.inMemory(cwd),
+    sessionManager: spec.sessionFile
+      ? pi.SessionManager.open(spec.sessionFile, undefined, cwd)
+      : pi.SessionManager.inMemory(cwd),
     settingsManager,
     sessionStartEvent: { type: 'session_start', reason: 'startup' },
   });

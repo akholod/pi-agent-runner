@@ -1,4 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
   DEFAULT_PROVIDER_EXTENSIONS,
   createPiSessionFactory,
@@ -50,6 +52,8 @@ const MAX_INVALID = 2;
 const DEPTH_KEY = Symbol.for('pi-agent-runner:depth');
 const depthStore = ((globalThis as Record<symbol, unknown>)[DEPTH_KEY] ??=
   new AsyncLocalStorage<number>()) as AsyncLocalStorage<number>;
+
+const RECENT_OUTPUT_CHARS = 200;
 
 let defaultFactory: ChildSessionFactory | undefined;
 
@@ -133,6 +137,22 @@ const runSession = async (
     structured && checker
       ? createResultCollector(structured, checker.validate)
       : undefined;
+
+  // An existing file would be loaded and continued as the child's history.
+  const sessionFile = options.transcriptPath
+    ? path.resolve(options.cwd, options.transcriptPath)
+    : undefined;
+  if (sessionFile) {
+    if (fs.existsSync(sessionFile)) {
+      return {
+        status: 'failed',
+        value: undefined,
+        usage: emptyUsage(0),
+        error: `transcript already exists: ${sessionFile}`,
+      };
+    }
+    fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+  }
 
   const factory = deps.factory ?? (defaultFactory ??= createPiSessionFactory());
   let reason: { why: Reason; error: string } | undefined;
@@ -226,6 +246,7 @@ const runSession = async (
         providerExtensions:
           options.providerExtensions ?? DEFAULT_PROVIDER_EXTENSIONS,
         parent: options.parent,
+        sessionFile,
         guard: {
           allowedTools:
             options.tools && structured
@@ -267,10 +288,18 @@ const runSession = async (
     let toolCalls = 0;
     let tokens = 0;
     let tool: string | undefined;
+    let recentOutput: string | undefined;
     const notify = () => {
       if (finished || !onUpdate) return;
       try {
-        onUpdate({ turn: turns, tool, tokens });
+        onUpdate({
+          turn: turns,
+          tool,
+          toolCalls,
+          tokens,
+          durationMs: elapsed(),
+          recentOutput,
+        });
       } catch {
         // A throwing listener must not break the run.
       }
@@ -290,8 +319,12 @@ const runSession = async (
           toolTimers.get(event.toolCallId)?.clear();
           toolTimers.delete(event.toolCallId);
         }
+        tool = undefined;
+        notify();
       } else if (event.type === 'message_end' && isAssistant(event.message)) {
         tokens += messageTokens(event.message);
+        const text = textOf(event.message);
+        if (text) recentOutput = text.slice(-RECENT_OUTPUT_CHARS);
         notify();
       }
     });
@@ -329,6 +362,9 @@ const runSession = async (
       usage: { ...usage, durationMs: elapsed(), waitedMs: waited() },
       model,
       error,
+      // Pi writes the file only once the conversation has a message.
+      transcriptPath:
+        sessionFile && fs.existsSync(sessionFile) ? sessionFile : undefined,
     });
 
     const hit = stopReason();

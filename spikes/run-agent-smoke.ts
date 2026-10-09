@@ -49,6 +49,7 @@ export default function (api: ExtensionAPI) {
         readRoots: process.env.SMOKE_READ_ROOTS?.split(','),
         gitGuard: process.env.SMOKE_GIT_GUARD !== '0',
         permissionAsks: process.env.SMOKE_ASKS === 'deny' ? 'deny' : 'forward',
+        transcriptPath: process.env.SMOKE_TRANSCRIPT,
         signal: controller.signal,
         onUpdate: (u) => updates.push(u),
       });

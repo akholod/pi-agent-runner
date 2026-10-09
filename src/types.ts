@@ -88,14 +88,24 @@ export interface RunAgentOptions {
   permissionAsks?: 'deny' | 'forward';
   signal?: AbortSignal;
   onUpdate?: (update: RunUpdate) => void;
-  /** Save the child transcript as JSONL. */
+  /**
+   * Persist the child session to this new file (Pi's session JSONL, opens
+   * with `pi --session <file>`), relative to cwd. Must not exist yet; parent
+   * directories are created. Kept on every outcome. Unset: the session lives
+   * in memory and nothing is written.
+   */
   transcriptPath?: string;
 }
 
 export interface RunUpdate {
   turn: number;
+  /** Tool running now; unset between tools. */
   tool?: string;
+  toolCalls: number;
   tokens: number;
+  durationMs: number;
+  /** Tail of the latest assistant text. */
+  recentOutput?: string;
 }
 
 export interface RunUsage {
@@ -119,5 +129,6 @@ export interface RunAgentResult {
   /** Resolved `provider/id`. */
   model?: string;
   error?: string;
+  /** Absolute path, set when the transcript file was written. */
   transcriptPath?: string;
 }

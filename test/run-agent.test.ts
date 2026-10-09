@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { test } from 'node:test';
 import { runAgent } from '../src/index.ts';
 import type {
@@ -57,11 +60,51 @@ test('completed: text, usage, counters, model, one dispose', async () => {
   assert.equal(result.usage.toolCalls, 1);
   assert.equal(session.disposes, 1);
   assert.equal(updates.length, 5);
-  assert.deepEqual(updates[1], { turn: 1, tool: 'read', tokens: 0 });
+  const { durationMs, ...second } = updates[1];
+  assert.ok(durationMs >= 0);
+  assert.deepEqual(second, {
+    turn: 1,
+    tool: 'read',
+    toolCalls: 1,
+    tokens: 0,
+    recentOutput: undefined,
+  });
   assert.equal(updates.at(-1)?.tokens, 36);
+  assert.equal(updates.at(-1)?.recentOutput, 'final');
   assert.equal(factory.calls[0].model, undefined);
   assert.equal(factory.calls[0].noSkills, true);
   assert.equal(factory.calls[0].noContextFiles, true);
+});
+
+test('updates: order, tool cleared at tool end, output tail', async () => {
+  const session = new FakeSession();
+  const updates: RunUpdate[] = [];
+  const long = `${'x'.repeat(250)}END`;
+  session.script = async (s) => {
+    s.emit({ type: 'turn_start' });
+    s.emit({ type: 'tool_execution_start', toolName: 'ls' });
+    s.emit({ type: 'tool_execution_end', toolCallId: 't1' });
+    s.emit({ type: 'turn_start' });
+    s.messages.push(assistant(long));
+    s.emit({ type: 'message_end', message: assistant(long) });
+  };
+  await runAgent(base({ onUpdate: (u) => updates.push(u) }), {
+    factory: factoryOf(async () => session),
+  });
+  assert.deepEqual(
+    updates.map((u) => [u.turn, u.tool, u.toolCalls]),
+    [
+      [1, undefined, 0],
+      [1, 'ls', 1],
+      [1, undefined, 1],
+      [2, undefined, 1],
+      [2, undefined, 1],
+    ],
+  );
+  const tail = updates.at(-1)?.recentOutput ?? '';
+  assert.equal(tail.length, 200);
+  assert.ok(tail.endsWith('END'));
+  assert.ok(updates.every((u, i) => i === 0 || u.durationMs >= 0));
 });
 
 test('model and thinking: inherit becomes undefined', async () => {
@@ -667,4 +710,66 @@ test('depth: an aborted signal still reports cancelled', async () => {
     factory: factoryOf(async () => new FakeSession()),
   });
   assert.equal(result.status, 'cancelled');
+});
+
+const tempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'runner-test-'));
+
+test('transcript off: no session file, nothing written', async () => {
+  const cwd = tempDir();
+  const session = new FakeSession();
+  session.messages.push(assistant('ok'));
+  const factory = factoryOf(async () => session);
+  const result = await runAgent(base({ cwd }), { factory });
+  assert.equal(factory.calls[0].sessionFile, undefined);
+  assert.equal(result.transcriptPath, undefined);
+  assert.deepEqual(fs.readdirSync(cwd), []);
+});
+
+test('transcript: resolved against cwd, path reported', async () => {
+  const cwd = tempDir();
+  const session = new FakeSession();
+  session.script = async (s) => {
+    fs.writeFileSync(s.spec?.sessionFile ?? '', '{}\n');
+    s.messages.push(assistant('ok'));
+  };
+  const factory = factoryOf(async () => session);
+  const result = await runAgent(
+    base({ cwd, transcriptPath: 'logs/run/child.jsonl' }),
+    { factory },
+  );
+  const file = path.join(cwd, 'logs/run/child.jsonl');
+  assert.equal(factory.calls[0].sessionFile, file);
+  assert.equal(result.transcriptPath, file);
+});
+
+test('transcript: kept on failure, unset when never written', async () => {
+  const cwd = tempDir();
+  const written = new FakeSession();
+  written.script = async (s) => {
+    fs.writeFileSync(s.spec?.sessionFile ?? '', '{}\n');
+    s.messages.push(assistant('', { stopReason: 'error', errorMessage: 'x' }));
+  };
+  const failed = await runAgent(base({ cwd, transcriptPath: 'a.jsonl' }), {
+    factory: factoryOf(async () => written),
+  });
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.transcriptPath, path.join(cwd, 'a.jsonl'));
+  const silent = new FakeSession();
+  silent.messages.push(assistant('ok'));
+  const empty = await runAgent(base({ cwd, transcriptPath: 'b.jsonl' }), {
+    factory: factoryOf(async () => silent),
+  });
+  assert.equal(empty.transcriptPath, undefined);
+});
+
+test('transcript: an existing file is refused before any session', async () => {
+  const cwd = tempDir();
+  fs.writeFileSync(path.join(cwd, 'old.jsonl'), '{}\n');
+  const factory = factoryOf(async () => new FakeSession());
+  const result = await runAgent(base({ cwd, transcriptPath: 'old.jsonl' }), {
+    factory,
+  });
+  assert.equal(result.status, 'failed');
+  assert.match(result.error ?? '', /transcript already exists/);
+  assert.equal(factory.calls.length, 0);
 });

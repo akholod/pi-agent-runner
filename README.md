@@ -25,16 +25,20 @@ const result = await runAgent({
   timeoutMs: 600_000,
   toolTimeoutMs: 120_000,
   signal,
-  onUpdate: ({ turn, tool, tokens }) => {},
+  onUpdate: ({ turn, tool, toolCalls, tokens, durationMs, recentOutput }) => {},
+  transcriptPath: '.runs/child.jsonl', // optional
 });
-// result: { status, value, usage, model?, error? }
+// result: { status, value, usage, model?, error?, transcriptPath? }
 // usage: { input, output, cacheRead, cacheWrite, cost, turns, toolCalls,
 //          durationMs, waitedMs }
 ```
 
 Statuses: `completed | failed | timed_out | cancelled |
-structured_output_failed`. `transcriptPath` (T10) is not implemented yet and
-is ignored.
+structured_output_failed`.
+
+Transcript: `transcriptPath` (relative to cwd, must not exist) persists the
+child session as Pi's session JSONL, kept on every outcome; `pi --session
+<file>` opens and continues it. Without it nothing is written.
 
 Structured output: pass `result: { kind: 'structured', schema }` (a JSON
 Schema). The child gets a `submit_result` tool (`SUBMIT_RESULT_TOOL`) whose
