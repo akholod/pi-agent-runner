@@ -1,5 +1,5 @@
 export * from './types.ts';
-export { runAgent } from './run-agent.ts';
+export { runAgent, startAgent } from './run-agent.ts';
 export { SUBMIT_RESULT_TOOL } from './structured.ts';
 export {
   createPiSessionFactory,

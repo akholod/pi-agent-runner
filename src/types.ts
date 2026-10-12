@@ -138,3 +138,54 @@ export interface RunAgentResult {
   /** Absolute path, set when the transcript file was written. */
   transcriptPath?: string;
 }
+
+export interface StartAgentOptions extends Omit<
+  RunAgentOptions,
+  | 'task'
+  | 'timeoutMs'
+  | 'toolTimeoutMs'
+  | 'signal'
+  | 'onUpdate'
+  | 'transcriptPath'
+> {
+  /** New session file, relative to cwd; must not exist (as in runAgent). */
+  transcriptPath?: string;
+  /**
+   * Existing session file, relative to cwd, continued in place. Exclusive
+   * with `transcriptPath`; a missing file is refused before any session.
+   */
+  resumeFrom?: string;
+  /** Cancels creation only. */
+  signal?: AbortSignal;
+}
+
+/** Limits and listeners of one generation. */
+export interface TurnOptions {
+  timeoutMs?: number;
+  toolTimeoutMs?: number;
+  signal?: AbortSignal;
+  onUpdate?: (update: RunUpdate) => void;
+}
+
+export interface GenerationResult extends RunAgentResult {
+  /** steer/followUp texts accepted but never delivered (queue cleared). */
+  dropped: string[];
+}
+
+export type QueueDisposition = 'queued' | 'idle' | 'disposed';
+
+export interface AgentHandle {
+  readonly sessionId: string;
+  /** Absolute; for `resumeFrom`, the resumed file. Set once it exists. */
+  readonly transcriptPath?: string;
+  readonly state: 'idle' | 'running' | 'disposed';
+  /** One generation. Rejects when running or disposed, never otherwise. */
+  run(task: string, options?: TurnOptions): Promise<GenerationResult>;
+  /** Rejects when Pi refuses the text (for example an extension command). */
+  steer(text: string): Promise<QueueDisposition>;
+  followUp(text: string): Promise<QueueDisposition>;
+  /** Current generation ends `cancelled`; the session stays usable. */
+  abort(): Promise<void>;
+  /** Idempotent; aborts a running generation first. */
+  dispose(): Promise<void>;
+}

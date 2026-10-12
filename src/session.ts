@@ -59,6 +59,12 @@ export interface ChildSession {
   /** Resolves when the run ends, including after abort. */
   prompt(text: string): Promise<void>;
   abort(): Promise<void>;
+  /** Queue a message for after the current tool calls; throws if refused. */
+  steer(text: string): Promise<void>;
+  /** Queue a message delivered once the agent has nothing else to do. */
+  followUp(text: string): Promise<void>;
+  /** Drops and returns the queued, undelivered messages. */
+  clearQueue(): { steering: string[]; followUp: string[] };
   /** Idempotent; shuts the child's extensions down and drops the session. */
   dispose(): Promise<void>;
 }
@@ -454,6 +460,13 @@ const openSession = async (
       session.subscribe((event) => listener(event as unknown as ChildEvent)),
     prompt: (text) => session.prompt(text),
     abort: () => session.abort(),
+    steer: async (text) => {
+      await session.steer(text);
+    },
+    followUp: async (text) => {
+      await session.followUp(text);
+    },
+    clearQueue: () => session.clearQueue(),
     dispose,
   };
 };

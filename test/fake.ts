@@ -50,6 +50,13 @@ export class FakeSession implements ChildSession {
   spec: ChildSpec | undefined;
   /** Set by the factory helper: the spec's tool-start callback. */
   onToolCall: ChildSpec['onToolCall'];
+  /** Texts accepted by steer()/followUp() and not yet delivered. */
+  steering: string[] = [];
+  followUps: string[] = [];
+  /** Throws from steer()/followUp(), like Pi refusing a `/command`. */
+  queueError: Error | undefined;
+  /** Texts delivered to the model: a script calls deliverQueued(). */
+  delivered: string[] = [];
   private listeners = new Set<(e: ChildEvent) => void>();
 
   subscribe(listener: (e: ChildEvent) => void) {
@@ -63,6 +70,28 @@ export class FakeSession implements ChildSession {
     this.prompts.push(text);
     await this.script(this, this.prompts.length);
     if (this.promptError) throw this.promptError;
+  }
+  async steer(text: string) {
+    if (this.queueError) throw this.queueError;
+    this.steering.push(text);
+  }
+  async followUp(text: string) {
+    if (this.queueError) throw this.queueError;
+    this.followUps.push(text);
+  }
+  clearQueue() {
+    const left = { steering: this.steering, followUp: this.followUps };
+    this.steering = [];
+    this.followUps = [];
+    return left;
+  }
+  /** What the agent loop does between turns: the queue reaches the model. */
+  deliverQueued() {
+    const all = [...this.steering, ...this.followUps];
+    this.delivered.push(...all);
+    this.steering = [];
+    this.followUps = [];
+    return all;
   }
   async abort() {
     this.aborts++;

@@ -33,6 +33,45 @@ const result = await runAgent({
 //          durationMs, waitedMs }
 ```
 
+### `startAgent`: a long-lived handle
+
+`startAgent(options)` creates the session once and returns an `AgentHandle`;
+`runAgent` is `startAgent` + one `run` + `dispose`. `StartAgentOptions` is
+`RunAgentOptions` minus `task`, `timeoutMs`, `toolTimeoutMs` and `onUpdate`
+(those belong to `run`); `signal` cancels creation only.
+
+```ts
+const agent = await startAgent({ parent, cwd, systemPrompt, tools });
+const first = await agent.run('review src/', { timeoutMs: 60_000, signal });
+// while a run is in flight: 'queued'; between runs: 'idle'
+await agent.steer('also check the tests');
+const second = await agent.run('now fix it', { onUpdate });
+await agent.dispose();
+```
+
+- A `run` is one generation. Timeouts, `signal`, `onUpdate`, `usage`,
+  `turns` and `toolCalls` are per generation and count only its messages.
+  `run` rejects when the handle is running or disposed; otherwise it never
+  rejects and reports a status.
+- `abort()` ends the current generation as `cancelled` and keeps the session
+  for the next `run`; it resolves once the generation has ended, so `run`
+  may follow at once, and does nothing when idle. `dispose()` is idempotent
+  and aborts a running generation first, so its `run` resolves `cancelled`.
+- `steer(text)` and `followUp(text)` resolve `'queued'` while a generation
+  runs, `'idle'` when none does (nothing is queued: put the text in the next
+  `run`) and `'disposed'` after `dispose`. Pi's refusal (for example text
+  starting with `/`) is a rejected promise. Acceptance is not delivery: when
+  a generation ends, still-undelivered messages are cleared and returned as
+  `result.dropped`.
+- Structured `result`, `tools`, `model`, guards and `maxDepth` are fixed at
+  start. Each generation gets a fresh `submit_result` collector and its own
+  correction turn; a `submit_result` outside a generation is refused.
+- `transcriptPath` works as in `runAgent`. `resumeFrom` (relative to cwd)
+  continues an existing session file in place; it must exist (checked before
+  any session is created) and excludes `transcriptPath`. Do not resume a
+  file another live handle holds. `handle.transcriptPath` is the absolute
+  file once it exists.
+
 Statuses: `completed | failed | timed_out | cancelled |
 structured_output_failed`.
 
