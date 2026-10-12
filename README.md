@@ -126,6 +126,18 @@ Behavior the spikes settled:
   last.
 - Structured output only through a `submit_result` tool call.
 
+## Known limitations
+
+- An orphaned permission prompt (one whose decision event never arrives)
+  keeps the run and tool timers paused until the tracker drops it after its
+  30-minute cap. Until then `timeoutMs` and `toolTimeoutMs` do not fire;
+  `signal` and `dispose()` still cancel the run at once.
+- `pi-claude-bridge` registers its provider at load only in the first module
+  instance per process. Later instances register at `session_start`, after
+  the runner has resolved the model. Without a bridge provider in the parent,
+  only one live bridge child works at a time. A real Pi parent is fine: the
+  child inherits the parent's provider.
+
 ## Development
 
 ```sh
