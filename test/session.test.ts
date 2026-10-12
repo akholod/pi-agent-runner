@@ -87,11 +87,13 @@ test('orderRunnerExtensions: guard first, runner hooks last in order', () => {
     ext('<inline:pi-agent-runner:guard>'),
     ext('<inline:pi-agent-runner:submit-result>'),
     ext('/b/other.ts'),
+    ext('<inline:caller-extension-0>'),
   ];
   assert.deepEqual(
     orderRunnerExtensions(input).map((e) => e.path),
     [
       '<inline:pi-agent-runner:guard>',
+      '<inline:caller-extension-0>',
       '/a/permission.ts',
       '/b/other.ts',
       '<inline:pi-agent-runner:freeze-prompt>',

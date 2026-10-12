@@ -108,6 +108,16 @@ Policy: `policyExtensions` (default `['@gotgenes/pi-permission-system']`)
 load into every child when installed, even with `extensions: 'none'`, so
 the user's permission rules gate child tool calls too.
 
+Caller extensions: `extensionFactories?: ExtensionFactory[]` (type from
+`@earendil-works/pi-coding-agent`) loads inline extensions into every child,
+right after the runner's guards (allowlist, git guard, read roots, depth),
+before permission gates and before the prompt-freeze and tool-start hooks:
+a call the guards refuse never reaches them, and a call they block never
+opens a permission dialog. They run in the child's process like any extension; use
+them for per-call policies such as loop guards (`tool_call` / `tool_result`
+handlers). With `startAgent` each factory loads once per session, not per
+generation.
+
 Permission asks: `permissionAsks: 'forward'` (default) registers the child
 with pi-permission-system: an `ask` opens a dialog in the parent and the
 timers pause meanwhile. `'deny'` leaves the child unregistered, so it has no

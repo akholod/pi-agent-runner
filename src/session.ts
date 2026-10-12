@@ -35,6 +35,8 @@ export interface ChildSpec {
   providerExtensions: Record<string, string>;
   /** Loaded whenever installed; see RunAgentOptions.policyExtensions. */
   policyExtensions: string[];
+  /** Caller inline extensions; see RunAgentOptions.extensionFactories. */
+  extensionFactories?: ExtensionFactory[];
   parent: ParentContext;
   /** Persist the session to this file; unset keeps it in memory. */
   sessionFile?: string;
@@ -98,6 +100,8 @@ export const DEFAULT_PROVIDER_EXTENSIONS: Record<string, string> = {
 
 const GUARD_NAME = 'pi-agent-runner:guard';
 const GUARD_PATH = `<inline:${GUARD_NAME}>`;
+const CALLER_NAME = 'caller-extension';
+const CALLER_PREFIX = `<inline:${CALLER_NAME}-`;
 const TAIL_NAMES = [
   'pi-agent-runner:freeze-prompt',
   'pi-agent-runner:tool-start',
@@ -106,8 +110,9 @@ const TAIL_NAMES = [
 
 /**
  * Handlers run in extension order and the first block wins. The guard goes
- * first so it refuses before permission gates can ask a person about a call
- * that would be refused anyway. The freeze and tool-start hooks go last:
+ * first, then the caller's extensions, so both refuse before permission
+ * gates can ask a person about a call that would be refused anyway. The
+ * freeze and tool-start hooks go last:
  * freeze must have the final word on the prompt, and tool-start must fire
  * only after every gate passed.
  */
@@ -116,13 +121,17 @@ export const orderRunnerExtensions = <T extends { path: string }>(
 ): T[] => {
   const tail = TAIL_NAMES.map((name) => `<inline:${name}>`);
   const guard = extensions.filter((e) => e.path === GUARD_PATH);
+  const callers = extensions.filter((e) => e.path.startsWith(CALLER_PREFIX));
   const last = tail.flatMap((path) =>
     extensions.filter((e) => e.path === path),
   );
   const others = extensions.filter(
-    (e) => e.path !== GUARD_PATH && !tail.includes(e.path),
+    (e) =>
+      e.path !== GUARD_PATH &&
+      !e.path.startsWith(CALLER_PREFIX) &&
+      !tail.includes(e.path),
   );
-  return [...guard, ...others, ...last];
+  return [...guard, ...callers, ...others, ...last];
 };
 
 export const isFromPackage = (resource: ResolvedExtension, name: string) => {
@@ -250,6 +259,22 @@ const submitResultTool = (
   },
 });
 
+// Guard first, then the caller's extensions, then the freeze and tool-start
+// hooks (see orderRunnerExtensions).
+export const buildInlineFactories = (spec: ChildSpec) => {
+  const factories = [
+    guardHook(spec),
+    ...(spec.extensionFactories ?? []).map((factory, index) => ({
+      name: `${CALLER_NAME}-${index}`,
+      factory,
+    })),
+    freezeHook,
+    toolStartHook(spec),
+  ];
+  if (spec.resultTool) factories.push(submitResultTool(spec.resultTool));
+  return factories;
+};
+
 type ModelRuntime = Awaited<ReturnType<typeof pi.ModelRuntime.create>>;
 
 // Registers what the loaded extensions queued; returns the claimed ids.
@@ -329,8 +354,7 @@ const openSession = async (
     spec.policyExtensions,
   );
 
-  const inlineFactories = [guardHook(spec), freezeHook, toolStartHook(spec)];
-  if (spec.resultTool) inlineFactories.push(submitResultTool(spec.resultTool));
+  const inlineFactories = buildInlineFactories(spec);
 
   const loader = new pi.DefaultResourceLoader({
     cwd,

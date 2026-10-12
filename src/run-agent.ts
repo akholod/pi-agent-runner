@@ -321,6 +321,7 @@ const open = async (
       providerExtensions:
         options.providerExtensions ?? DEFAULT_PROVIDER_EXTENSIONS,
       policyExtensions: options.policyExtensions ?? DEFAULT_POLICY_EXTENSIONS,
+      extensionFactories: options.extensionFactories,
       parent: options.parent,
       sessionFile,
       guard: {

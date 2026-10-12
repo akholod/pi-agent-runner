@@ -1,4 +1,7 @@
-import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
+import type {
+  ExtensionContext,
+  ExtensionFactory,
+} from '@earendil-works/pi-coding-agent';
 
 export const RUN_STATUSES = [
   'completed',
@@ -59,6 +62,15 @@ export interface RunAgentOptions {
    * `['@gotgenes/pi-permission-system']`; `[]` turns it off.
    */
   policyExtensions?: string[];
+  /**
+   * Inline extensions loaded into the child right after the runner's own
+   * guards (tool allowlist, git guard, read roots, depth), before permission
+   * gates and before the system-prompt freeze and tool-start hooks. They run
+   * in the child's process like any extension; use them for per-call
+   * policies such as loop guards. A call the runner's guards refuse never
+   * reaches them.
+   */
+  extensionFactories?: ExtensionFactory[];
   result?: ResultSpec;
   /** Wall-clock limit; time spent waiting for a person is not counted. */
   timeoutMs?: number;
