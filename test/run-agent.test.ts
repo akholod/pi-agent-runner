@@ -773,3 +773,15 @@ test('transcript: an existing file is refused before any session', async () => {
   assert.match(result.error ?? '', /transcript already exists/);
   assert.equal(factory.calls.length, 0);
 });
+
+test('policy extensions: permission-system by default', async () => {
+  const session = new FakeSession();
+  session.messages.push(assistant('ok'));
+  const factory = factoryOf(async () => session);
+  await runAgent(base(), { factory });
+  await runAgent(base({ policyExtensions: [] }), { factory });
+  assert.deepEqual(factory.calls[0].policyExtensions, [
+    '@gotgenes/pi-permission-system',
+  ]);
+  assert.deepEqual(factory.calls[1].policyExtensions, []);
+});

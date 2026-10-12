@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
+  DEFAULT_POLICY_EXTENSIONS,
   DEFAULT_PROVIDER_EXTENSIONS,
   createPiSessionFactory,
 } from './session.ts';
@@ -245,6 +246,7 @@ const runSession = async (
         noSkills: options.noSkills ?? true,
         providerExtensions:
           options.providerExtensions ?? DEFAULT_PROVIDER_EXTENSIONS,
+        policyExtensions: options.policyExtensions ?? DEFAULT_POLICY_EXTENSIONS,
         parent: options.parent,
         sessionFile,
         guard: {

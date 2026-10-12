@@ -100,3 +100,25 @@ test('orderRunnerExtensions: guard first, runner hooks last in order', () => {
     ],
   );
 });
+
+test('policy packages load with none, unless turned off', () => {
+  const perm = res(
+    '/h/.pi/agent/npm/node_modules/@gotgenes/pi-permission-system/src/index.ts',
+    'npm:@gotgenes/pi-permission-system',
+  );
+  const withPerm = [...all, perm];
+  const policy = ['@gotgenes/pi-permission-system'];
+  assert.deepEqual(
+    selectExtensionPaths(withPerm, 'none', {}, undefined, policy),
+    [perm.path],
+  );
+  assert.deepEqual(
+    selectExtensionPaths(withPerm, 'none', {}, undefined, []),
+    [],
+  );
+  // Not installed: nothing to load, no error.
+  assert.deepEqual(
+    selectExtensionPaths(all, 'none', {}, undefined, policy),
+    [],
+  );
+});

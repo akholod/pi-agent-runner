@@ -33,6 +33,8 @@ export interface ChildSpec {
   noContextFiles: boolean;
   noSkills: boolean;
   providerExtensions: Record<string, string>;
+  /** Loaded whenever installed; see RunAgentOptions.policyExtensions. */
+  policyExtensions: string[];
   parent: ParentContext;
   /** Persist the session to this file; unset keeps it in memory. */
   sessionFile?: string;
@@ -79,6 +81,10 @@ const DENIED_PACKAGES = [
   'pi-agent-runner',
 ];
 const DENIED_PATH = /\/pi_sandbox\/(spiral|opium|pi-agent-runner)\//;
+
+// Without it a child's tool calls skip the user's permission rules, and
+// `permissionAsks` has nothing to act on.
+export const DEFAULT_POLICY_EXTENSIONS = ['@gotgenes/pi-permission-system'];
 
 export const DEFAULT_PROVIDER_EXTENSIONS: Record<string, string> = {
   'claude-bridge': 'pi-claude-bridge',
@@ -131,14 +137,19 @@ export const providerOf = (model: string | undefined) => {
   return model && slash > 0 ? model.slice(0, slash) : undefined;
 };
 
-/** Paths to load: requested packages plus the model provider's package. */
+/**
+ * Paths to load: requested packages, the model provider's package and the
+ * policy packages.
+ */
 export const selectExtensionPaths = (
   resources: ResolvedExtension[],
   extensions: ExtensionMode,
   providerExtensions: Record<string, string>,
   provider: string | undefined,
+  policyExtensions: string[] = [],
 ) => {
   const wanted = new Set(extensions === 'none' ? [] : extensions.packages);
+  for (const name of policyExtensions) wanted.add(name);
   const providerPackage = provider ? providerExtensions[provider] : undefined;
   if (providerPackage) wanted.add(providerPackage);
   const paths: string[] = [];
@@ -309,6 +320,7 @@ const openSession = async (
     spec.extensions,
     spec.providerExtensions,
     provider,
+    spec.policyExtensions,
   );
 
   const inlineFactories = [guardHook(spec), freezeHook, toolStartHook(spec)];

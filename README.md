@@ -65,6 +65,10 @@ allowlist (nested calls included), `gitGuard` (default on: blocks `git push`,
 outside cwd and the roots are refused). `maxDepth` (default 1) stops a child
 from starting its own child; the depth is counted across package copies.
 
+Policy: `policyExtensions` (default `['@gotgenes/pi-permission-system']`)
+load into every child when installed, even with `extensions: 'none'`, so
+the user's permission rules gate child tool calls too.
+
 Permission asks: `permissionAsks: 'forward'` (default) registers the child
 with pi-permission-system: an `ask` opens a dialog in the parent and the
 timers pause meanwhile. `'deny'` leaves the child unregistered, so it has no

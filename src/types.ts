@@ -53,6 +53,12 @@ export interface RunAgentOptions {
   noSkills?: boolean;
   /** Provider id to npm package that registers it. */
   providerExtensions?: Record<string, string>;
+  /**
+   * Packages loaded into every child when installed, whatever `extensions`
+   * says, so the user's policy also gates child tool calls. Default
+   * `['@gotgenes/pi-permission-system']`; `[]` turns it off.
+   */
+  policyExtensions?: string[];
   result?: ResultSpec;
   /** Wall-clock limit; time spent waiting for a person is not counted. */
   timeoutMs?: number;
