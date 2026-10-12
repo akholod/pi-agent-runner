@@ -1,6 +1,7 @@
 """Run one command over `pi --mode rpc` and log every notification with a
 timestamp until a line matching the stop pattern arrives."""
 import json
+import os
 import re
 import subprocess
 import sys
@@ -8,7 +9,7 @@ import time
 
 cwd, message, stop, deadline_s, out_path = sys.argv[1:6]
 proc = subprocess.Popen(
-    ["pi", "--mode", "rpc", "--no-session"],
+    ["pi", "--mode", "rpc", "--no-session", *os.environ.get("PI_ARGS", "").split()],
     cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
     text=True, bufsize=1,
 )

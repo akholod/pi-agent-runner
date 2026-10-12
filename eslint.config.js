@@ -2,7 +2,7 @@ import metarhia from 'eslint-config-metarhia';
 import tseslint from 'typescript-eslint';
 
 export default [
-  { ignores: ['node_modules/', 'spikes/'] },
+  { ignores: ['node_modules/', 'spikes/', 'dist/'] },
   ...metarhia,
   ...tseslint.configs.recommended,
   {

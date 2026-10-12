@@ -1,16 +1,36 @@
 {
   "name": "pi-agent-runner",
-  "version": "0.0.1",
-  "private": true,
+  "version": "0.1.0",
   "description": "In-process child-agent runner for Pi plugins, built on createAgentSession",
-  "type": "module",
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "subagent",
+    "agent",
+    "runner"
+  ],
+  "homepage": "https://github.com/akholod/pi-agent-runner#readme",
+  "bugs": {
+    "url": "https://github.com/akholod/pi-agent-runner/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akholod/pi-agent-runner.git"
+  },
   "license": "MIT",
+  "author": "akholod",
+  "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
   "files": [
+    "dist",
     "src",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=22.6"
@@ -20,7 +40,9 @@
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "lint": "eslint . && prettier --check \"**/*.ts\" \"**/*.json\" \"**/*.md\"",
     "fix": "eslint . --fix && prettier --write \"**/*.ts\" \"**/*.json\" \"**/*.md\"",
-    "test:live": "RUNNER_LIVE=1 node --experimental-strip-types --test --test-concurrency=1 test/live.test.ts"
+    "test:live": "RUNNER_LIVE=1 node --experimental-strip-types --test --test-concurrency=1 test/live.test.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build && npm run typecheck && npm run lint && npm test"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
