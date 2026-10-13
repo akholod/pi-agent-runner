@@ -1,6 +1,6 @@
 {
   "name": "pi-agent-runner",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "In-process child-agent runner for Pi plugins, built on createAgentSession",
   "keywords": [
     "pi",
@@ -47,11 +47,13 @@
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^1.1.0",
     "@earendil-works/pi-coding-agent": "^1.1.0",
+    "@earendil-works/pi-tui": "^1.1.0",
     "@types/node": "^24.0.0",
     "eslint": "^9.39.5",
     "eslint-config-metarhia": "^9.2.1",
