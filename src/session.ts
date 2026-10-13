@@ -1,6 +1,7 @@
 // The seam between `runAgent` and Pi: `ChildSessionFactory` is injectable so
 // tests script a child without the Pi runtime; the real one wraps
 // `createAgentSession`. Design: spiral/docs/standalone-runner-plan.md
+import * as fs from 'node:fs';
 import * as pi from '@earendil-works/pi-coding-agent';
 import type {
   ExtensionAPI,
@@ -46,6 +47,8 @@ export interface ChildSpec {
   forwardAsks: boolean;
   /** A top-level tool call is about to run, after every permission gate. */
   onToolCall?: (call: { toolCallId: string; toolName: string }) => void;
+  /** Every lifecycle event of the child, from the activity extension. */
+  onActivity?: (event: ChildEvent) => void;
   /** Registers `submit_result` in the child; the run ends on a valid call. */
   resultTool?: {
     schema: Record<string, unknown>;
@@ -105,6 +108,7 @@ const CALLER_PREFIX = `<inline:${CALLER_NAME}-`;
 const TAIL_NAMES = [
   'pi-agent-runner:freeze-prompt',
   'pi-agent-runner:tool-start',
+  'pi-agent-runner:activity',
   'pi-agent-runner:submit-result',
 ];
 
@@ -226,6 +230,48 @@ const toolStartHook = (
   },
 });
 
+// Events that show the child is alive. Streaming `message_update` counts as
+// activity; provider_stream_event and the provider hooks are the only live
+// signals some providers give before their first message ends.
+const ACTIVITY_EVENTS = [
+  'agent_start',
+  'turn_start',
+  'turn_end',
+  'message_start',
+  'message_update',
+  'message_end',
+  'tool_call',
+  'tool_execution_start',
+  'tool_execution_update',
+  'tool_execution_end',
+  'tool_result',
+  'before_provider_request',
+  'after_provider_response',
+  'provider_stream_event',
+] as const;
+
+const activityHook = (
+  spec: ChildSpec,
+): { name: string; factory: ExtensionFactory } => ({
+  name: 'pi-agent-runner:activity',
+  factory: (api: ExtensionAPI) => {
+    for (const type of ACTIVITY_EVENTS) {
+      (api as unknown as ActivitySubscriber).on(type, (event) => {
+        try {
+          spec.onActivity?.({ ...(event as object), type } as ChildEvent);
+        } catch {
+          // A broken listener must not break the child.
+        }
+        return undefined;
+      });
+    }
+  },
+});
+
+type ActivitySubscriber = {
+  on(type: string, handler: (event: unknown) => unknown): void;
+};
+
 const submitResultTool = (
   resultTool: NonNullable<ChildSpec['resultTool']>,
 ): { name: string; factory: ExtensionFactory } => ({
@@ -259,8 +305,8 @@ const submitResultTool = (
   },
 });
 
-// Guard first, then the caller's extensions, then the freeze and tool-start
-// hooks (see orderRunnerExtensions).
+// Guard first, then the caller's extensions, then the freeze, tool-start and
+// activity hooks (see orderRunnerExtensions).
 export const buildInlineFactories = (spec: ChildSpec) => {
   const factories = [
     guardHook(spec),
@@ -270,9 +316,33 @@ export const buildInlineFactories = (spec: ChildSpec) => {
     })),
     freezeHook,
     toolStartHook(spec),
+    activityHook(spec),
   ];
   if (spec.resultTool) factories.push(submitResultTool(spec.resultTool));
   return factories;
+};
+
+interface ModelTarget {
+  model: pi.AgentSession['model'];
+  setModel(model: NonNullable<pi.AgentSession['model']>): Promise<void>;
+  setThinkingLevel(level: never): void;
+}
+
+/**
+ * A resumed session file restores the model and thinking level saved in it.
+ * The requested ones (explicit, or the parent's when inheriting) win.
+ */
+export const applyRequestedModel = async (
+  session: ModelTarget,
+  model: NonNullable<pi.AgentSession['model']>,
+  thinkingLevel: ThinkingLevel | undefined,
+) => {
+  const same =
+    session.model?.provider === model.provider && session.model.id === model.id;
+  if (!same) await session.setModel(model);
+  if (thinkingLevel !== undefined) {
+    session.setThinkingLevel(thinkingLevel as never);
+  }
 };
 
 type ModelRuntime = Awaited<ReturnType<typeof pi.ModelRuntime.create>>;
@@ -413,6 +483,7 @@ const openSession = async (
   const thinkingLevel =
     spec.thinking ?? resolvedThinking ?? parent.ctx.thinkingLevel;
 
+  const resumed = Boolean(spec.sessionFile && fs.existsSync(spec.sessionFile));
   const { session } = await pi.createAgentSession({
     cwd,
     agentDir,
@@ -427,6 +498,10 @@ const openSession = async (
     settingsManager,
     sessionStartEvent: { type: 'session_start', reason: 'startup' },
   });
+
+  if (resumed && model) {
+    await applyRequestedModel(session, model, thinkingLevel);
+  }
 
   const sessionId = session.sessionId;
   const registration = {

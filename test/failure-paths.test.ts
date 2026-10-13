@@ -215,3 +215,44 @@ test('abort in a microtask after creation: cancelled, no prompt', async () => {
   assert.equal(session.prompts.length, 0);
   assert.equal(session.disposes, 1);
 });
+
+test('an empty answer after a retried provider error is failed', async () => {
+  const session = new FakeSession();
+  session.script = async (s) => {
+    s.emit({ type: 'turn_start' });
+    const error = assistant('', {
+      stopReason: 'error',
+      errorMessage: 'rate limit (five_hour)',
+    });
+    s.emit({ type: 'message_end', message: error });
+    // Pi drops the error message from the context and retries; the retry
+    // returns an empty stop message
+    const empty = { ...assistant(''), content: [] };
+    s.emit({ type: 'message_end', message: empty });
+    s.messages.push(empty);
+  };
+  const result = await runAgent(base(), {
+    factory: factoryOf(async () => session),
+  });
+  assert.equal(result.status, 'failed');
+  assert.match(result.error ?? '', /rate limit/);
+});
+
+test('a provider error followed by a real answer is completed', async () => {
+  const session = new FakeSession();
+  session.script = async (s) => {
+    s.emit({ type: 'turn_start' });
+    s.emit({
+      type: 'message_end',
+      message: assistant('', { stopReason: 'error', errorMessage: 'flaky' }),
+    });
+    const ok = assistant('recovered');
+    s.emit({ type: 'message_end', message: ok });
+    s.messages.push(ok);
+  };
+  const result = await runAgent(base(), {
+    factory: factoryOf(async () => session),
+  });
+  assert.equal(result.status, 'completed');
+  assert.equal(result.value, 'recovered');
+});

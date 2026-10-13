@@ -1,0 +1,560 @@
+import { afterEach, test } from 'node:test';
+import assert from 'node:assert/strict';
+import { visibleWidth } from '@earendil-works/pi-tui';
+import type { LiveRegistry, LiveRun } from '../src/live.ts';
+import {
+  CHANGE_MS,
+  CLOCK_MS,
+  MAX_ROWS,
+  RECENT_WINDOW_MS,
+  SPINNER,
+  SPIN_MS,
+  WIDGET_KEY,
+  formatElapsed,
+  formatTokens,
+  mountRunsView,
+  renderRunsView,
+  shortModel,
+  type MountOptions,
+  type Paint,
+  type RunsView,
+  type ViewContext,
+  type WidgetFactory,
+} from '../src/view.ts';
+
+const NOW = 10_000_000;
+const SEC = 1000;
+const MIN = 60_000;
+
+const run = (over: Partial<LiveRun>): LiveRun => ({
+  id: 's-exec',
+  name: 'spiral-executor',
+  context: 'ralph US-002',
+  model: 'openai/gpt-6-luna',
+  state: 'running',
+  waitingForUser: false,
+  currentTool: 'bash',
+  turns: 4,
+  toolCalls: 7,
+  tokens: { input: 12_000, output: 300 },
+  cost: 0.02,
+  generation: 1,
+  startedAt: NOW - 41 * SEC,
+  lastActivityAt: NOW - SEC,
+  lastStepAt: NOW - 3 * SEC,
+  ...over,
+});
+
+const waiting = (over: Partial<LiveRun> = {}): LiveRun =>
+  run({
+    id: 's-critic',
+    name: 'spiral-critic',
+    context: 'ralplan #2',
+    model: 'anthropic/claude-opus-5',
+    waitingForUser: true,
+    currentTool: 'edit',
+    turns: 2,
+    tokens: { input: 0, output: 0 },
+    startedAt: NOW - 65 * SEC,
+    ...over,
+  });
+
+const done = (over: Partial<LiveRun> = {}): LiveRun =>
+  run({
+    id: 'o-explorer',
+    name: 'explorer',
+    context: 'opium',
+    state: 'completed',
+    currentTool: undefined,
+    turns: 6,
+    tokens: { input: 8000, output: 100 },
+    startedAt: NOW - 2 * MIN - 22 * SEC,
+    endedAt: NOW - 2 * MIN,
+    ...over,
+  });
+
+const render = (runs: LiveRun[], width = 100, frame = 0): string[] =>
+  renderRunsView(runs, NOW, width, undefined, frame);
+
+// column start of `text` on each line, measured in cells
+const columnOf = (line: string, text: string): number =>
+  visibleWidth(line.slice(0, line.indexOf(text)));
+
+test('formatters: elapsed, tokens, model', () => {
+  assert.equal(formatElapsed(41 * SEC), '0:41');
+  assert.equal(formatElapsed(65 * SEC), '1:05');
+  assert.equal(formatElapsed(3600 * SEC + 62 * SEC), '1:01:02');
+  assert.equal(formatTokens(0), '');
+  assert.equal(formatTokens(950), '950');
+  assert.equal(formatTokens(12_300), '12.3k');
+  assert.equal(formatTokens(99_960), '100k');
+  assert.equal(formatTokens(2_400_000), '2.4M');
+  assert.equal(shortModel('openai/gpt-6-luna'), 'gpt-6-luna');
+  assert.equal(shortModel('anthropic/claude-opus-5-20260101'), 'opus-5');
+  assert.equal(shortModel(undefined), '');
+});
+
+test('the three example rows: spinner, waiting for you, done', () => {
+  const lines = render([run({}), waiting(), done()]);
+  assert.equal(lines.length, 4);
+  assert.match(lines[0], /^agents ─+ 1 running · 1 waiting$/);
+  assert.equal(visibleWidth(lines[0]), 100);
+  // the critic started first, so it leads
+  assert.deepEqual(lines.slice(1), [
+    '⏸ spiral-critic    ralplan #2    opus-5      t2  ' +
+      'waiting for you         1:05',
+    '⠋ spiral-executor  ralph US-002  gpt-6-luna  t4  ' +
+      'bash             12.3k  0:41',
+    '✓ explorer         opium         gpt-6-luna  t6  ' +
+      'done              8.1k  0:22',
+  ]);
+});
+
+test('rows align: every column starts at the same cell', () => {
+  const lines = render([run({}), waiting(), done()]).slice(1);
+  for (const [a, b, c] of [
+    ['ralplan', 'ralph US', 'opium'],
+    ['t2', 't4', 't6'],
+    ['waiting', 'bash', 'done'],
+  ]) {
+    const cols = [
+      columnOf(lines[0], a),
+      columnOf(lines[1], b),
+      columnOf(lines[2], c),
+    ];
+    assert.equal(new Set(cols).size, 1, `${a}: ${cols}`);
+  }
+  assert.ok(
+    lines.every((line) => visibleWidth(line) === visibleWidth(lines[0])),
+  );
+});
+
+test('the spinner glyph follows the frame; static glyphs do not', () => {
+  const runs = [run({}), waiting()];
+  const a = render(runs, 100, 0);
+  const b = render(runs, 100, 3);
+  assert.ok(a[2].startsWith(SPINNER[0]));
+  assert.ok(b[2].startsWith(SPINNER[3]));
+  assert.equal(a[2].slice(1), b[2].slice(1));
+  assert.equal(a[1], b[1]);
+});
+
+test('a running run with no tool reads as thinking; starting and idle', () => {
+  const lines = render([
+    run({ currentTool: undefined }),
+    run({ id: 'b', state: 'starting', startedAt: NOW - SEC }),
+    done({ id: 'c', state: 'idle', endedAt: undefined }),
+  ]);
+  assert.match(lines[1], /^⠋ .* thinking /);
+  assert.match(lines[2], /^○ .* starting /);
+  assert.match(lines[3], /^○ .* idle /);
+});
+
+test('a possibly stuck run is marked in the row and the header', () => {
+  const stuck = run({ lastStepAt: NOW - 3 * MIN, startedAt: NOW - 4 * MIN });
+  const lines = render([stuck]);
+  assert.match(lines[0], /1 running · 1 stuck$/);
+  assert.match(lines[1], /^▲ spiral-executor .* possibly stuck .* 4:00$/);
+});
+
+test('failed, bad output, timed out, cancelled: own glyphs', () => {
+  const lines = render([
+    done({ id: 'a', state: 'failed', endedAt: NOW - 1 * SEC }),
+    done({ id: 'b', state: 'timed_out', endedAt: NOW - 2 * SEC }),
+    done({ id: 'c', state: 'cancelled', endedAt: NOW - 3 * SEC }),
+  ]);
+  assert.match(lines[0], /^agents ─+$/, 'no counts when nothing runs');
+  assert.match(lines[1], /^✗ explorer .* failed /);
+  assert.match(lines[2], /^◔ explorer .* timed out /);
+  assert.match(lines[3], /^■ explorer .* cancelled /);
+  const bad = render([done({ state: 'structured_output_failed' })]);
+  assert.match(bad[1], /^✗ explorer .* bad output /);
+});
+
+test('order: active oldest first, then three finished newest first', () => {
+  const lines = render([
+    done({ id: 'old', name: 'f-old', endedAt: NOW - 5 * MIN }),
+    run({ id: 'young', name: 'r-young', startedAt: NOW - 10 * SEC }),
+    done({ id: 'new', name: 'f-new', endedAt: NOW - 1 * MIN }),
+    run({ id: 'elder', name: 'r-elder', startedAt: NOW - 50 * SEC }),
+    done({ id: 'mid', name: 'f-mid', endedAt: NOW - 3 * MIN }),
+    done({ id: 'oldest', name: 'f-oldest', endedAt: NOW - 8 * MIN }),
+    done({ id: 'gone', name: 'f-gone', endedAt: NOW - RECENT_WINDOW_MS }),
+  ]);
+  const names = lines.slice(1).map((line) => line.split(/\s+/)[1]);
+  assert.deepEqual(names, ['r-elder', 'r-young', 'f-new', 'f-mid', 'f-old']);
+});
+
+test('extra rows collapse into "+N more"', () => {
+  const runs = Array.from({ length: 9 }, (_, i) =>
+    run({ id: `r${i}`, name: `agent-${i}`, startedAt: NOW - (20 - i) * SEC }),
+  );
+  const lines = render(runs);
+  assert.equal(lines.length, MAX_ROWS + 1);
+  assert.match(lines[1], /agent-0 /);
+  assert.equal(lines.at(-1), '  +4 more');
+  assert.equal(render(runs.slice(0, MAX_ROWS)).length, MAX_ROWS + 1);
+  assert.doesNotMatch(render(runs.slice(0, MAX_ROWS)).at(-1)!, /more/);
+});
+
+test('narrow widths drop model, then context, then tokens; never wrap', () => {
+  const runs = [run({}), waiting(), done()];
+  const at = (width: number): string => render(runs, width)[2];
+  assert.match(at(80), /gpt-6-luna/);
+  const noModel = at(70);
+  assert.doesNotMatch(noModel, /gpt-6/);
+  assert.match(noModel, /ralph US-002/);
+  const noContext = at(55);
+  assert.doesNotMatch(noContext, /ralph/);
+  assert.match(noContext, /12\.3k/);
+  const noTokens = at(50);
+  assert.doesNotMatch(noTokens, /12\.3k/);
+  assert.match(noTokens, /^⠋ spiral-executor .*bash .*0:41$/);
+
+  const long = [
+    run({
+      name: 'n'.repeat(80),
+      context: 'c'.repeat(80),
+      currentTool: 'x'.repeat(80),
+    }),
+    ...runs,
+  ];
+  for (const width of [160, 100, 60, 40, 24, 12, 3, 1]) {
+    for (const line of render(long, width)) {
+      assert.ok(visibleWidth(line) <= width, `${width}: ${line}`);
+      assert.doesNotMatch(line, /\n/);
+    }
+  }
+  assert.ok(render(long, 100).some((line) => /^⠋ nnn+… /.test(line)));
+  assert.deepEqual(render(runs, 0), []);
+});
+
+test('nothing active or recent renders nothing', () => {
+  assert.deepEqual(render([]), []);
+  assert.deepEqual(render([done({ endedAt: NOW - RECENT_WINDOW_MS })]), []);
+});
+
+test('a theme colors states', () => {
+  const seen: string[] = [];
+  const paint: Paint = {
+    fg: (color, text) => {
+      seen.push(`${color}:${text}`);
+      return text;
+    },
+    bold: (text) => text,
+  };
+  renderRunsView(
+    [run({}), waiting(), done(), done({ id: 'f', state: 'failed' })],
+    NOW,
+    100,
+    paint,
+  );
+  for (const want of [
+    `accent:${SPINNER[0]}`,
+    'warning:⏸',
+    'warning:waiting for you',
+    'success:✓',
+    'error:✗',
+    'dim:agents',
+  ]) {
+    assert.ok(seen.includes(want), want);
+  }
+});
+
+// --- mount ---
+
+interface Registry extends LiveRegistry {
+  runs: LiveRun[];
+  listeners: Set<() => void>;
+  // registry.list calls, one per refresh
+  lists: number;
+  emit(): void;
+}
+
+const registry = (): Registry => {
+  const r: Registry = {
+    runs: [],
+    listeners: new Set(),
+    lists: 0,
+    list: () => {
+      r.lists += 1;
+      return r.runs;
+    },
+    subscribe(listener) {
+      r.listeners.add(listener);
+      return () => r.listeners.delete(listener);
+    },
+    emit: () => r.listeners.forEach((fn) => fn()),
+  };
+  return r;
+};
+
+interface Timer {
+  fn: () => void;
+  ms: number;
+}
+
+interface Clock {
+  now: number;
+  timers: Map<number, Timer>;
+  // the spin, clock or expiry timer; the change cooldown is left out
+  ticks(): Timer[];
+  cooldowns(): Timer[];
+  // fire every pending timer once, advancing the clock by its delay
+  fire(): void;
+  // fire only the pending change cooldowns
+  settle(): void;
+  options(reg: LiveRegistry): MountOptions;
+}
+
+const drain = (c: Clock, pick: (t: Timer) => boolean): void => {
+  const pending = [...c.timers.entries()].filter(([, t]) => pick(t));
+  for (const [id] of pending) c.timers.delete(id);
+  for (const [, t] of pending) {
+    c.now += t.ms;
+    t.fn();
+  }
+};
+
+const clock = (): Clock => {
+  let next = 0;
+  const isCooldown = (t: Timer): boolean => t.ms === CHANGE_MS;
+  const c: Clock = {
+    now: NOW,
+    timers: new Map(),
+    ticks: () => [...c.timers.values()].filter((t) => !isCooldown(t)),
+    cooldowns: () => [...c.timers.values()].filter(isCooldown),
+    fire: () => drain(c, () => true),
+    settle: () => drain(c, isCooldown),
+    options: (reg) => ({
+      registry: reg,
+      now: () => c.now,
+      setTimer: (fn, ms) => {
+        next += 1;
+        c.timers.set(next, { fn, ms });
+        return next;
+      },
+      clearTimer: (handle) => c.timers.delete(handle as number),
+    }),
+  };
+  return c;
+};
+
+const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
+
+interface Host extends ViewContext {
+  widget?: WidgetFactory;
+  calls: Array<WidgetFactory | undefined>;
+  renders: number;
+  draw(width?: number): string[] | undefined;
+}
+
+const host = (mode: ViewContext['mode'] = 'tui', hasUI = true): Host => {
+  let component: ReturnType<WidgetFactory> | undefined;
+  const h: Host = {
+    mode,
+    hasUI,
+    calls: [],
+    renders: 0,
+    ui: {
+      setWidget: ((key: string, content: WidgetFactory | undefined) => {
+        assert.equal(key, WIDGET_KEY);
+        h.calls.push(content);
+        h.widget = content;
+        component = content?.(
+          { requestRender: () => (h.renders += 1) } as never,
+          theme as never,
+        );
+      }) as ViewContext['ui']['setWidget'],
+    },
+    draw: (width = 100) => component?.render(width),
+  };
+  return h;
+};
+
+// the widget store is process-wide: a failed test must not leave an owner
+const views: RunsView[] = [];
+const mount = (ctx: ViewContext, options: MountOptions): RunsView => {
+  const view = mountRunsView(ctx, options);
+  views.push(view);
+  return view;
+};
+afterEach(() => {
+  for (const view of views.splice(0)) view.dispose();
+});
+
+test('mount is a no-op outside the TUI', () => {
+  const reg = registry();
+  reg.runs = [run({})];
+  for (const ctx of [host('rpc'), host('tui', false)]) {
+    mount(ctx, clock().options(reg));
+    assert.equal(ctx.calls.length, 0);
+    assert.equal(reg.listeners.size, 0);
+  }
+});
+
+test('empty registry shows no widget; it appears and leaves with runs', () => {
+  const reg = registry();
+  const c = clock();
+  const ctx = host();
+  mount(ctx, c.options(reg));
+  assert.equal(ctx.calls.length, 0);
+  assert.equal(c.timers.size, 0, 'no timer while empty');
+
+  reg.runs = [run({})];
+  reg.emit();
+  assert.equal(typeof ctx.widget, 'function', 'first change draws at once');
+  assert.match(ctx.draw()![1], /spiral-executor/);
+
+  reg.runs = [];
+  reg.emit();
+  assert.equal(ctx.calls.length, 1, 'second change waits for the cooldown');
+  c.settle();
+  assert.equal(ctx.calls.at(-1), undefined, 'widget removed');
+  c.settle();
+  assert.equal(c.timers.size, 0, 'nothing left once quiet');
+});
+
+test('a burst of changes refreshes at most twice until timers fire', () => {
+  const reg = registry();
+  reg.runs = [run({})];
+  const c = clock();
+  const ctx = host();
+  mount(ctx, c.options(reg));
+  const before = reg.lists;
+  for (let i = 0; i < 50; i += 1) {
+    reg.runs = [run({ turns: i })];
+    reg.emit();
+  }
+  assert.ok(reg.lists - before <= 2, `${reg.lists - before} refreshes`);
+  assert.equal(c.cooldowns().length, 1);
+  // the trailing refresh picks up the last change
+  c.settle();
+  assert.equal(reg.lists - before, 2);
+  assert.match(ctx.draw()![1], / t49 /);
+  c.settle();
+  assert.equal(c.cooldowns().length, 0, 'quiet: cooldown ends');
+});
+
+test('the spinner ticks only while something runs', () => {
+  const reg = registry();
+  const c = clock();
+  const ctx = host();
+  reg.runs = [run({})];
+  mount(ctx, c.options(reg));
+  assert.deepEqual(
+    c.ticks().map((t) => t.ms),
+    [SPIN_MS],
+  );
+
+  const first = ctx.draw()!;
+  assert.equal(ctx.draw(), first, 'same frame is cached');
+  // registry chatter keeps the same tick, so the spinner is not starved
+  const tick = c.ticks()[0];
+  reg.emit();
+  reg.emit();
+  c.settle();
+  assert.deepEqual(c.ticks(), [tick]);
+
+  const renders = ctx.renders;
+  c.fire();
+  assert.equal(ctx.renders, renders + 1);
+  const second = ctx.draw()!;
+  assert.ok(second[1].startsWith(SPINNER[1]));
+  assert.equal(second[1].slice(1), first[1].slice(1), 'only the glyph moved');
+
+  // waiting for the user: no spinner, the clock still moves each second
+  reg.runs = [waiting()];
+  reg.emit();
+  c.settle();
+  assert.deepEqual(
+    c.ticks().map((t) => t.ms),
+    [CLOCK_MS],
+  );
+
+  // finished: no tick, one wake-up when the row leaves the window
+  reg.runs = [done({ endedAt: c.now })];
+  reg.emit();
+  c.settle();
+  c.settle();
+  assert.equal(c.cooldowns().length, 0);
+  assert.deepEqual(
+    c.ticks().map((t) => t.ms),
+    [RECENT_WINDOW_MS],
+  );
+  c.fire();
+  assert.equal(c.timers.size, 0, 'idle: no timer');
+  assert.equal(ctx.calls.at(-1), undefined);
+});
+
+test('the clock advances on ticks', () => {
+  const reg = registry();
+  const c = clock();
+  const ctx = host();
+  reg.runs = [run({})];
+  mount(ctx, c.options(reg));
+  assert.match(ctx.draw()![1], /0:41$/);
+  // 13 spinner ticks of 160 ms: two seconds later
+  for (let i = 0; i < 13; i += 1) c.fire();
+  assert.match(ctx.draw()![1], /0:43$/);
+});
+
+test('two mounts render once and hand over on dispose', () => {
+  const reg = registry();
+  reg.runs = [run({})];
+  const c = clock();
+  const opium = host();
+  const spiral = host();
+  const a = mount(opium, c.options(reg));
+  const b = mount(spiral, c.options(reg));
+  assert.equal(opium.calls.length, 1);
+  assert.equal(spiral.calls.length, 0, 'second mount only counts');
+  assert.equal(reg.listeners.size, 1);
+  assert.equal(c.ticks().length, 1);
+
+  // the owner is mid-cooldown when it goes away
+  reg.emit();
+  assert.equal(c.cooldowns().length, 1);
+  a.dispose();
+  assert.equal(opium.calls.at(-1), undefined, 'old widget cleared');
+  assert.equal(typeof spiral.widget, 'function', 'handed over');
+  assert.equal(reg.listeners.size, 1);
+  assert.equal(c.ticks().length, 1);
+  assert.equal(c.cooldowns().length, 0, 'old cooldown cleared');
+
+  // disposing twice is harmless, and a non-owner dispose changes nothing
+  a.dispose();
+  const third = host();
+  mount(third, c.options(reg)).dispose();
+  assert.equal(third.calls.length, 0);
+  assert.equal(typeof spiral.widget, 'function');
+
+  b.dispose();
+  assert.equal(spiral.calls.at(-1), undefined);
+  assert.equal(reg.listeners.size, 0);
+  assert.equal(c.timers.size, 0);
+});
+
+test('dispose clears the widget, every timer and the subscription', () => {
+  const reg = registry();
+  reg.runs = [run({}), done()];
+  const c = clock();
+  const ctx = host();
+  const view = mount(ctx, c.options(reg));
+  reg.emit();
+  reg.emit();
+  assert.equal(c.ticks().length, 1);
+  assert.equal(c.cooldowns().length, 1);
+  view.dispose();
+  assert.equal(c.timers.size, 0, 'tick and cooldown both cleared');
+  assert.equal(reg.listeners.size, 0);
+  assert.equal(ctx.calls.at(-1), undefined);
+  const count = ctx.calls.length;
+  reg.emit();
+  view.dispose();
+  assert.equal(ctx.calls.length, count, 'inert after dispose');
+
+  // the next mount in the process starts fresh
+  mount(ctx, c.options(reg));
+  assert.equal(typeof ctx.widget, 'function');
+});

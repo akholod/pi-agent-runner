@@ -107,6 +107,12 @@ export interface RunAgentOptions {
   signal?: AbortSignal;
   onUpdate?: (update: RunUpdate) => void;
   /**
+   * Shown for this run in the process-wide live registry (`liveRuns()`).
+   * `name` defaults to `agent`; `context` is free text such as
+   * `ralph US-002`. Inherited by startAgent.
+   */
+  label?: { name: string; context?: string };
+  /**
    * Persist the child session to this new file (Pi's session JSONL, opens
    * with `pi --session <file>`), relative to cwd. Must not exist yet; parent
    * directories are created. Kept on every outcome. Unset: the session lives

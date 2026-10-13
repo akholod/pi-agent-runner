@@ -59,6 +59,7 @@ test('caller factories sit between the guard and freeze/tool-start', () => {
       'caller-extension-1',
       'pi-agent-runner:freeze-prompt',
       'pi-agent-runner:tool-start',
+      'pi-agent-runner:activity',
     ],
   );
 });

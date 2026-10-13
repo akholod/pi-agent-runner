@@ -70,7 +70,10 @@ await agent.dispose();
   continues an existing session file in place; it must exist (checked before
   any session is created) and excludes `transcriptPath`. Do not resume a
   file another live handle holds. `handle.transcriptPath` is the absolute
-  file once it exists.
+  file once it exists. Pi restores the model saved in the file; the
+  runner then sets the requested model (`model`, or the parent's when
+  inheriting) and thinking level on the revived session, so the model of
+  the original run does not leak into the new one.
 
 Statuses: `completed | failed | timed_out | cancelled |
 structured_output_failed`.
@@ -136,7 +139,47 @@ Behavior the spikes settled:
   last.
 - Structured output only through a `submit_result` tool call.
 
+## Labels and the live registry
+
+`label: { name, context? }` on `runAgent`/`startAgent` names a run for
+display (`name` defaults to `agent`; `context` is free text such as
+`ralph US-002`).
+
+Every child is listed in a process-wide registry, shared by all installed
+copies of the runner (it lives on `globalThis`, so Spiral's and Opium's
+children show in one list):
+
+```ts
+import { liveRuns, isPossiblyStuck } from 'pi-agent-runner';
+const registry = liveRuns();
+const stop = registry.subscribe(() => render(registry.list())); // every change
+```
+
+`list()` returns snapshot copies, oldest first. A `LiveRun` has `id`
+(child sessionId), `parentSessionId`, `name`, `context`, `model`, `state`
+(`starting | running | idle | <RunStatus>`), `waitingForUser`,
+`currentTool`, `turns`, `toolCalls`, `tokens`, `cost`, `generation`,
+`startedAt`, `lastActivityAt`, `lastStepAt`, `endedAt`, `error`. The state
+is `starting` until the first generation, `running` during one, then the
+generation's terminal status until the next generation (`idle` is a
+`startAgent` handle that has not run yet). Counters belong to the current
+generation and are settled from the runner's own usage accounting when it
+ends. A run is dropped 10 minutes after its session is disposed; the list
+holds at most 200 runs. `waitingForUser` is set while a forwarded
+permission prompt of that child is open. `isPossiblyStuck(run, now)` is
+true for a running child that is not waiting for a person and has had no
+turn end or tool end for `STUCK_AFTER_MS` (2 minutes). The listener fires
+on every event, streaming deltas included: throttle renders.
+
 ## Known limitations
+
+- Live activity of `claude-bridge` children is sparse early on. The bridge
+  runs tools in Pi (no tool runs inside the Claude process) and emits normal
+  Pi events, but nothing reaches Pi until Claude Code has produced its first
+  streamed block, and `message_end` (usage) arrives only when a message
+  ends. The registry therefore also uses streamed usage on `message_update`
+  and any provider event as activity; `tokens` are authoritative at the end
+  of the generation.
 
 - An orphaned permission prompt (one whose decision event never arrives)
   keeps the run and tool timers paused until the tracker drops it after its

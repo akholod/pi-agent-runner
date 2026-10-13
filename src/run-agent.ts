@@ -14,6 +14,8 @@ import {
   validator,
 } from './structured.ts';
 import { humanWaitTracker } from './human-wait.ts';
+import { trackRun } from './live.ts';
+import type { Tracked } from './live.ts';
 import { createPausableTimer } from './timer.ts';
 import type { PausableTimer } from './timer.ts';
 import type {
@@ -306,6 +308,8 @@ const open = async (
   let generation: { control: Control; collector?: Collector } | undefined;
 
   let session: ChildSession;
+  // Set once the session exists; activity before that is not tracked.
+  const live: { run?: Tracked } = {};
   try {
     const inheritModel = !options.model || options.model === 'inherit';
     const thinking = options.thinking;
@@ -336,6 +340,7 @@ const open = async (
       forwardAsks: options.permissionAsks !== 'deny',
       // Bound once; both delegate to the generation running right now.
       onToolCall: (call) => generation?.control.onToolCall(call),
+      onActivity: (event) => live.run?.activity(event),
       resultTool: structured
         ? {
             schema: structured,
@@ -368,13 +373,28 @@ const open = async (
       creation.outcome('failed', '').usage,
     );
   }
+  const tracked = trackRun({
+    id: session.sessionId,
+    parentSessionId: options.parent.ctx.sessionManager?.getSessionId(),
+    name: options.label?.name,
+    context: options.label?.context,
+    model: session.modelId,
+    events: options.parent.events,
+  });
+  live.run = tracked;
   if (creation.reason) {
     creation.finish();
+    tracked.generationEnd(
+      creation.reason.why,
+      { input: 0, output: 0, cost: 0 },
+      creation.reason.error,
+    );
     try {
       await session.dispose();
     } catch {
       // Cleanup failure must not change the outcome.
     }
+    tracked.dispose();
     throw new StartError(
       creation.reason.why,
       creation.reason.error,
@@ -401,6 +421,7 @@ const open = async (
         : undefined;
     generation = { control, collector };
     control.attach(session);
+    tracked.generationStart();
     const baseline = seen;
     let unsubscribe: (() => void) | undefined;
 
@@ -427,6 +448,7 @@ const open = async (
           // A throwing listener must not break the run.
         }
       };
+      let providerError: string | undefined;
       unsubscribe = session.subscribe((event: ChildEvent) => {
         if (control.finished) return;
         if (event.type === 'turn_start') {
@@ -445,6 +467,14 @@ const open = async (
           tool = undefined;
           notify();
         } else if (event.type === 'message_end' && isAssistant(event.message)) {
+          const message = event.message;
+          // Pi retries a provider error after dropping the error message
+          // from the context; remember it until a non-empty answer arrives
+          if (message.stopReason === 'error' || message.errorMessage) {
+            providerError = message.errorMessage ?? 'provider error';
+          } else if ((message.content ?? []).length > 0) {
+            providerError = undefined;
+          }
           tokens += messageTokens(event.message);
           const text = textOf(event.message);
           if (text) recentOutput = text.slice(-RECENT_OUTPUT_CHARS);
@@ -523,6 +553,10 @@ const open = async (
           last?.errorMessage ?? 'child ended without a final answer',
         );
       }
+      // an empty answer after a provider error is that error, not a result
+      if (providerError !== undefined && (last.content ?? []).length === 0) {
+        return done('failed', undefined, providerError);
+      }
       return done('completed', textOf(last));
     };
 
@@ -530,6 +564,14 @@ const open = async (
     const dropped: string[] = [];
     try {
       result = await execute();
+      tracked.generationEnd(result.status, result.usage, result.error);
+    } catch (error) {
+      tracked.generationEnd(
+        'failed',
+        { input: 0, output: 0, cost: 0 },
+        messageOf(error),
+      );
+      throw error;
     } finally {
       control.finish();
       unsubscribe?.();
@@ -617,6 +659,7 @@ const open = async (
         } catch {
           // Cleanup failure must not change the outcome.
         }
+        tracked.dispose();
       })();
       return disposing;
     },
@@ -624,6 +667,7 @@ const open = async (
 
   return {
     handle,
+    tracked,
     runFirst: (task: string, turn: TurnOptions) =>
       runWith(task, turn, creation),
   };
@@ -633,7 +677,8 @@ export const startAgent = async (
   options: StartAgentOptions,
   deps: { factory?: ChildSessionFactory } = {},
 ): Promise<AgentHandle> => {
-  const { handle } = await open(options, deps);
+  const { handle, tracked } = await open(options, deps);
+  tracked.idle();
   return handle;
 };
 

@@ -19,3 +19,7 @@ export { humanWaitTracker } from './human-wait.ts';
 export type { HumanWaitTracker } from './human-wait.ts';
 export { dangerousGitCommand, guardDecision } from './guards.ts';
 export type { GuardConfig } from './guards.ts';
+export { liveRuns, isPossiblyStuck, STUCK_AFTER_MS } from './live.ts';
+export type { LiveRegistry, LiveRun, LiveState } from './live.ts';
+export { mountRunsView, renderRunsView } from './view.ts';
+export type { MountOptions, RunsView } from './view.ts';
