@@ -31,19 +31,31 @@ export const SPIN_MS = 160;
 export const CLOCK_MS = 1000;
 export const CHANGE_MS = 100;
 export const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+// a running row shows how long it has been quiet past this; tool calls and
+// model turns that are going fine send events well within it
+export const QUIET_AFTER_MS = 30_000;
 
 export type Paint = Pick<Theme, 'fg' | 'bold'>;
 
 const plain: Paint = { fg: (_color, text) => text, bold: (text) => text };
 
-const isActive = (run: LiveRun): boolean =>
+export const isActive = (run: LiveRun): boolean =>
   run.state === 'starting' || run.state === 'running' || run.waitingForUser;
 
 const isSpinning = (run: LiveRun): boolean =>
   run.state === 'running' && !run.waitingForUser;
 
 // an idle run has no end yet; its last activity stands in for one
-const endOf = (run: LiveRun): number => run.endedAt ?? run.lastActivityAt;
+export const endOf = (run: LiveRun): number =>
+  run.endedAt ?? run.lastActivityAt;
+
+const quietFor = (run: LiveRun, now: number): number =>
+  now - run.lastActivityAt;
+
+// no step for STUCK_AFTER_MS and no sign of life either: a child that
+// streams a long answer or tool output is slow, not stuck
+const isStuck = (run: LiveRun, now: number): boolean =>
+  isPossiblyStuck(run, now) && quietFor(run, now) >= QUIET_AFTER_MS;
 
 const pad2 = (n: number): string => String(n).padStart(2, '0');
 
@@ -63,6 +75,20 @@ export const formatTokens = (n: number): string => {
   return `${(n / 1_000_000).toFixed(1)}M`;
 };
 
+export const formatCost = (usd: number): string => {
+  if (!(usd > 0)) return '';
+  if (usd < 0.01) return '<$0.01';
+  if (usd < 99.995) return `$${usd.toFixed(2)}`;
+  return `$${Math.round(usd)}`;
+};
+
+// cost when the provider reports one; subscription providers report 0
+const usageOf = (run: LiveRun): string => {
+  if (run.cost > 0) return formatCost(run.cost);
+  const tokens = formatTokens(run.tokens.input + run.tokens.output);
+  return tokens && `${tokens} tok`;
+};
+
 // 'anthropic/claude-opus-5-5-20260101' -> 'opus-5-5'
 export const shortModel = (model?: string): string => {
   if (!model) return '';
@@ -72,7 +98,12 @@ export const shortModel = (model?: string): string => {
     .replace(/-(\d{8}|latest)$/, '');
 };
 
-const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim();
+// control characters would break the widget line, not just look odd
+export const oneLine = (text: string): string =>
+  text
+    .replace(/\s+/g, ' ')
+    .replace(/\p{Cc}/gu, '')
+    .trim();
 
 const graphemes = new Intl.Segmenter();
 
@@ -108,61 +139,105 @@ const selectRows = (runs: LiveRun[], now: number): Rows => ({
     .slice(0, MAX_RECENT),
 });
 
-interface Glyph {
+export interface Glyph {
   text: string;
   color: ThemeColor;
   spin: boolean;
 }
 
-interface Status {
-  glyph: Glyph;
+export interface Tail {
   text: string;
   color: ThemeColor;
 }
 
-const statusOf = (run: LiveRun, now: number): Status => {
+export interface Status {
+  glyph: Glyph;
+  text: string;
+  color: ThemeColor;
+  // kept when the cell is clipped: the quiet time matters more than the tool
+  tail?: Tail;
+  note?: string;
+}
+
+const NOTE_MAX = 40;
+
+// 'timed out after 600000ms' on a timed out row says nothing the status
+// and the clock do not; 'no activity for 300000ms' does
+const reasonOf = (run: LiveRun, label: string): string => {
+  let text = oneLine(run.error ?? '').replace(/\b(\d{4,})ms\b/g, (_, ms) =>
+    formatElapsed(Number(ms)),
+  );
+  if (text.toLowerCase().startsWith(label)) {
+    text = text.slice(label.length).trim();
+  }
+  return text === 'aborted' || text.startsWith('after ') ? '' : text;
+};
+
+const doingOf = (run: LiveRun): Tail => {
+  if (run.wrappingUp) return { text: 'wrapping up', color: 'warning' };
+  if (run.currentTool) return { text: oneLine(run.currentTool), color: 'text' };
+  return { text: 'thinking', color: 'muted' };
+};
+
+const runningOf = (run: LiveRun, now: number): Status => {
+  const doing = doingOf(run);
+  const quiet = quietFor(run, now);
+  const stuck = isStuck(run, now);
+  const tail: Tail | undefined =
+    quiet >= QUIET_AFTER_MS
+      ? {
+          text: ` · quiet ${formatElapsed(quiet)}`,
+          color: stuck ? 'warning' : 'muted',
+        }
+      : undefined;
+  if (stuck) {
+    return {
+      glyph: { text: '▲', color: 'warning', spin: false },
+      text: doing.text,
+      color: 'warning',
+      tail,
+    };
+  }
+  return {
+    glyph: { text: SPINNER[0], color: 'accent', spin: true },
+    ...doing,
+    tail,
+  };
+};
+
+export const statusOf = (run: LiveRun, now: number): Status => {
   const mark = (text: string, color: ThemeColor, label: string): Status => ({
     glyph: { text, color, spin: false },
     text: label,
     color,
   });
+  const failed = (text: string, color: ThemeColor, label: string): Status => ({
+    ...mark(text, color, label),
+    note: reasonOf(run, label),
+  });
   if (isActive(run)) {
     if (run.waitingForUser) return mark('⏸', 'warning', 'waiting for you');
     if (run.state === 'starting') return mark('○', 'muted', 'starting');
-    if (isPossiblyStuck(run, now)) {
-      return mark('▲', 'warning', 'possibly stuck');
-    }
-    if (run.wrappingUp) {
-      return {
-        glyph: { text: SPINNER[0], color: 'accent', spin: true },
-        text: 'wrapping up',
-        color: 'warning',
-      };
-    }
-    return {
-      glyph: { text: SPINNER[0], color: 'accent', spin: true },
-      text: run.currentTool ? oneLine(run.currentTool) : 'thinking',
-      color: run.currentTool ? 'text' : 'muted',
-    };
+    return runningOf(run, now);
   }
   switch (run.state) {
     case 'completed':
       return { ...mark('✓', 'success', 'done'), color: 'muted' };
     case 'failed':
-      return mark('✗', 'error', 'failed');
+      return failed('✗', 'error', 'failed');
     case 'structured_output_failed':
-      return mark('✗', 'error', 'bad output');
+      return failed('✗', 'error', 'bad output');
     case 'timed_out':
-      return mark('◔', 'warning', 'timed out');
+      return failed('◔', 'warning', 'timed out');
     case 'cancelled':
-      return mark('■', 'muted', 'cancelled');
+      return failed('■', 'muted', 'cancelled');
     default:
       return mark('○', 'muted', run.state);
   }
 };
 
 type Key =
-  'name' | 'context' | 'model' | 'turns' | 'status' | 'tokens' | 'elapsed';
+  'name' | 'context' | 'model' | 'status' | 'usage' | 'elapsed' | 'note';
 
 interface Column {
   key: Key;
@@ -174,23 +249,28 @@ const COLUMNS: Column[] = [
   { key: 'name', max: 20 },
   { key: 'context', max: 16 },
   { key: 'model', max: 14 },
-  { key: 'turns', max: 5 },
-  { key: 'status', max: 20 },
-  { key: 'tokens', max: 6, right: true },
+  { key: 'status', max: 26 },
+  { key: 'usage', max: 9, right: true },
   { key: 'elapsed', max: 8, right: true },
 ];
 
-// on a narrow terminal these go first, in this order
-const DROP: Key[] = ['model', 'context', 'tokens', 'turns'];
+// on a narrow terminal these go first, in this order; the context stays
+// longest, it tells parallel runs of one agent apart
+const DROP: Key[] = ['model', 'usage', 'context'];
 // then these shrink, down to MIN_CELL
 const SHRINK: Key[] = ['status', 'name'];
 const MIN_CELL = 8;
+// the note (a failure reason) only takes the room left after the columns
+const MIN_NOTE = 8;
 const GAP = 2;
+// a clipped head keeps the tail only with this much of itself left
+const MIN_HEAD = 3;
 
 interface Cell {
   text: string;
   color: ThemeColor;
   bold?: boolean;
+  tail?: Tail;
 }
 
 interface Row {
@@ -209,19 +289,20 @@ const rowOf = (run: LiveRun, now: number): Row => {
         text: oneLine(run.name),
         color: active ? 'text' : 'muted',
         bold: active,
+        tail:
+          run.generation > 1
+            ? { text: ` g${run.generation}`, color: 'dim' }
+            : undefined,
       },
       context: { text: oneLine(run.context ?? ''), color: 'muted' },
       model: { text: shortModel(run.model), color: 'dim' },
-      turns: { text: `t${run.turns}`, color: 'dim' },
-      status: { text: status.text, color: status.color },
-      tokens: {
-        text: formatTokens(run.tokens.input + run.tokens.output),
-        color: 'dim',
-      },
+      status: { text: status.text, color: status.color, tail: status.tail },
+      usage: { text: usageOf(run), color: 'dim' },
       elapsed: {
         text: formatElapsed(end - run.startedAt),
         color: active ? 'muted' : 'dim',
       },
+      note: { text: status.note ?? '', color: 'muted' },
     },
   };
 };
@@ -232,14 +313,17 @@ interface Placed {
   right: boolean;
 }
 
+const widthOf = (cell: Cell): number =>
+  visibleWidth(cell.text) + visibleWidth(cell.tail?.text ?? '');
+
+const naturalWidth = (rows: Row[], key: Key): number =>
+  Math.max(...rows.map((row) => widthOf(row.cells[key])));
+
 // widths come from the visible rows only; empty columns take no space
 const fitColumns = (rows: Row[], budget: number): Placed[] => {
   const width = {} as Record<Key, number>;
   for (const { key, max } of COLUMNS) {
-    const natural = Math.max(
-      ...rows.map((row) => visibleWidth(row.cells[key].text)),
-    );
-    width[key] = Math.min(max, natural);
+    width[key] = Math.min(max, naturalWidth(rows, key));
   }
   let keys = COLUMNS.map((col) => col.key).filter((key) => width[key] > 0);
   const total = (): number =>
@@ -255,11 +339,35 @@ const fitColumns = (rows: Row[], budget: number): Placed[] => {
       width[key] = Math.max(MIN_CELL, width[key] - over);
     }
   }
-  return COLUMNS.filter((col) => keys.includes(col.key)).map((col) => ({
+  const placed = COLUMNS.filter((col) => keys.includes(col.key)).map((col) => ({
     key: col.key,
     width: width[col.key],
     right: col.right === true,
   }));
+  const note = Math.min(NOTE_MAX, naturalWidth(rows, 'note'));
+  const room = Math.min(note, budget - total() - GAP);
+  if (room > 0 && room >= Math.min(MIN_NOTE, note)) {
+    placed.push({ key: 'note', width: room, right: false });
+  }
+  return placed;
+};
+
+const paintCell = (cell: Cell, width: number, p: Paint): string => {
+  const head = (text: string): string => {
+    if (!text) return '';
+    const colored = p.fg(cell.color, text);
+    return cell.bold ? p.bold(colored) : colored;
+  };
+  const tail = cell.tail;
+  if (!tail) return head(clip(cell.text, width));
+  const room = width - visibleWidth(tail.text);
+  if (visibleWidth(cell.text) <= room) {
+    return head(cell.text) + p.fg(tail.color, tail.text);
+  }
+  if (room >= MIN_HEAD) {
+    return head(clip(cell.text, room)) + p.fg(tail.color, tail.text);
+  }
+  return head(clip(cell.text + tail.text, width));
 };
 
 const renderCells = (
@@ -269,12 +377,8 @@ const renderCells = (
   p: Paint,
 ): string => {
   const parts = columns.map(({ key, width, right }) => {
-    const cell = row.cells[key];
-    const text = clip(cell.text, width);
-    const fill = ' '.repeat(Math.max(0, width - visibleWidth(text)));
-    if (!text) return fill;
-    const colored = p.fg(cell.color, text);
-    const painted = cell.bold ? p.bold(colored) : colored;
+    const painted = paintCell(row.cells[key], width, p);
+    const fill = ' '.repeat(Math.max(0, width - visibleWidth(painted)));
     return right ? fill + painted : painted + fill;
   });
   const line = parts.join(' '.repeat(GAP)).trimEnd();
@@ -285,7 +389,7 @@ const headerLine = (rows: Rows, now: number, width: number, p: Paint) => {
   const label = 'agents';
   const waiting = rows.active.filter((run) => run.waitingForUser).length;
   const stuck = rows.active.filter(
-    (run) => isSpinning(run) && isPossiblyStuck(run, now),
+    (run) => isSpinning(run) && isStuck(run, now),
   ).length;
   const running = rows.active.length - waiting;
   const counts: string[] = [];

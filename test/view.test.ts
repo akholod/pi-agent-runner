@@ -6,10 +6,12 @@ import {
   CHANGE_MS,
   CLOCK_MS,
   MAX_ROWS,
+  QUIET_AFTER_MS,
   RECENT_WINDOW_MS,
   SPINNER,
   SPIN_MS,
   WIDGET_KEY,
+  formatCost,
   formatElapsed,
   formatTokens,
   mountRunsView,
@@ -80,7 +82,7 @@ const render = (runs: LiveRun[], width = 100, frame = 0): string[] =>
 const columnOf = (line: string, text: string): number =>
   visibleWidth(line.slice(0, line.indexOf(text)));
 
-test('formatters: elapsed, tokens, model', () => {
+test('formatters: elapsed, tokens, cost, model', () => {
   assert.equal(formatElapsed(41 * SEC), '0:41');
   assert.equal(formatElapsed(65 * SEC), '1:05');
   assert.equal(formatElapsed(3600 * SEC + 62 * SEC), '1:01:02');
@@ -89,6 +91,11 @@ test('formatters: elapsed, tokens, model', () => {
   assert.equal(formatTokens(12_300), '12.3k');
   assert.equal(formatTokens(99_960), '100k');
   assert.equal(formatTokens(2_400_000), '2.4M');
+  assert.equal(formatCost(0), '');
+  assert.equal(formatCost(0.004), '<$0.01');
+  assert.equal(formatCost(0.415), '$0.41');
+  assert.equal(formatCost(12.5), '$12.50');
+  assert.equal(formatCost(240.4), '$240');
   assert.equal(shortModel('openai/gpt-6-luna'), 'gpt-6-luna');
   assert.equal(shortModel('anthropic/claude-opus-5-20260101'), 'opus-5');
   assert.equal(shortModel(undefined), '');
@@ -101,12 +108,9 @@ test('the three example rows: spinner, waiting for you, done', () => {
   assert.equal(visibleWidth(lines[0]), 100);
   // the critic started first, so it leads
   assert.deepEqual(lines.slice(1), [
-    '⏸ spiral-critic    ralplan #2    opus-5      t2  ' +
-      'waiting for you         1:05',
-    '⠋ spiral-executor  ralph US-002  gpt-6-luna  t4  ' +
-      'bash             12.3k  0:41',
-    '✓ explorer         opium         gpt-6-luna  t6  ' +
-      'done              8.1k  0:22',
+    '⏸ spiral-critic    ralplan #2    opus-5      waiting for you  $0.02  1:05',
+    '⠋ spiral-executor  ralph US-002  gpt-6-luna  bash             $0.02  0:41',
+    '✓ explorer         opium         gpt-6-luna  done             $0.02  0:22',
   ]);
 });
 
@@ -114,7 +118,7 @@ test('rows align: every column starts at the same cell', () => {
   const lines = render([run({}), waiting(), done()]).slice(1);
   for (const [a, b, c] of [
     ['ralplan', 'ralph US', 'opium'],
-    ['t2', 't4', 't6'],
+    ['opus-5', 'gpt-6', 'gpt-6'],
     ['waiting', 'bash', 'done'],
   ]) {
     const cols = [
@@ -156,11 +160,149 @@ test('a wrapping up run shows the status word instead of the tool', () => {
   assert.doesNotMatch(lines[1], /bash/);
 });
 
-test('a possibly stuck run is marked in the row and the header', () => {
-  const stuck = run({ lastStepAt: NOW - 3 * MIN, startedAt: NOW - 4 * MIN });
+test('a quiet running run shows how long, past QUIET_AFTER_MS', () => {
+  const at = (quiet: number): string =>
+    render([run({ lastActivityAt: NOW - quiet })])[1];
+  assert.doesNotMatch(at(QUIET_AFTER_MS - SEC), /quiet/);
+  assert.match(at(QUIET_AFTER_MS), /^⠋ spiral-executor .* bash · quiet 0:30 /);
+  assert.match(at(95 * SEC), / bash · quiet 1:35 /);
+  const thinking = render([
+    run({ currentTool: undefined, lastActivityAt: NOW - 40 * SEC }),
+  ]);
+  assert.match(thinking[1], / thinking · quiet 0:40 /);
+});
+
+test('stuck: no step for long and quiet; marked in row and header', () => {
+  const stuck = run({
+    lastStepAt: NOW - 3 * MIN - 10 * SEC,
+    lastActivityAt: NOW - 3 * MIN - 10 * SEC,
+    startedAt: NOW - 4 * MIN,
+  });
   const lines = render([stuck]);
   assert.match(lines[0], /1 running · 1 stuck$/);
-  assert.match(lines[1], /^▲ spiral-executor .* possibly stuck .* 4:00$/);
+  assert.match(lines[1], /^▲ spiral-executor .* bash · quiet 3:10 .* 4:00$/);
+
+  const seen: string[] = [];
+  const paint: Paint = {
+    fg: (color, text) => {
+      seen.push(`${color}:${text}`);
+      return text;
+    },
+    bold: (text) => text,
+  };
+  renderRunsView([stuck], NOW, 100, paint);
+  for (const want of ['warning:▲', 'warning:bash', 'warning: · quiet 3:10']) {
+    assert.ok(seen.includes(want), want);
+  }
+});
+
+test('streaming without a step is not stuck; waiting never is', () => {
+  const streaming = run({
+    lastStepAt: NOW - 3 * MIN,
+    lastActivityAt: NOW - SEC,
+    startedAt: NOW - 4 * MIN,
+  });
+  const quietWait = waiting({
+    lastStepAt: NOW - 5 * MIN,
+    lastActivityAt: NOW - 5 * MIN,
+    startedAt: NOW - 6 * MIN,
+  });
+  const lines = render([streaming, quietWait]);
+  assert.doesNotMatch(lines[0], /stuck/);
+  assert.match(lines[1], /^⏸ spiral-critic .* waiting for you /);
+  assert.doesNotMatch(lines[1], /quiet/);
+  assert.match(lines[2], /^⠋ spiral-executor .* bash /);
+  assert.doesNotMatch(lines[2], /quiet/);
+});
+
+test('a wrapping up run keeps the quiet time and the stuck mark', () => {
+  const lines = render([
+    run({
+      wrappingUp: true,
+      lastStepAt: NOW - 3 * MIN,
+      lastActivityAt: NOW - 3 * MIN,
+      startedAt: NOW - 4 * MIN,
+    }),
+  ]);
+  assert.match(lines[1], /^▲ spiral-executor .* wrapping up · quiet 3:00 /);
+});
+
+test('a clipped status keeps its quiet time', () => {
+  const lines = render([
+    run({ currentTool: 'mcp__custom-tools__bash', lastActivityAt: NOW - MIN }),
+  ]);
+  assert.match(lines[1], / mcp__custom-… · quiet 1:00 /);
+});
+
+test('failure reasons trail the row, one line, clipped', () => {
+  const lines = render([
+    done({
+      id: 'a',
+      state: 'failed',
+      error:
+        '429 Too Many Requests:\n  rate limit exceeded for org, retry later',
+      endedAt: NOW - 1 * SEC,
+    }),
+    done({
+      id: 'b',
+      state: 'timed_out',
+      error: 'no activity for 300000ms',
+      endedAt: NOW - 2 * SEC,
+    }),
+    done({
+      id: 'c',
+      state: 'structured_output_failed',
+      error: 'missing field "summary"',
+      endedAt: NOW - 3 * SEC,
+    }),
+  ]);
+  assert.match(
+    lines[1],
+    /^✗ explorer .* failed .* \d:\d\d {2}429 Too Many Requests: rate limit ex/,
+  );
+  assert.match(lines[1], /rate limit excee…$/);
+  assert.equal(visibleWidth(lines[1].slice(lines[1].indexOf('429'))), 40);
+  assert.match(lines[2], / timed out .* \d:\d\d {2}no activity for 5:00$/);
+  assert.match(lines[3], / bad output .* \d:\d\d {2}missing field "summary"$/);
+  // a short reason fits where a long one has no room
+  const at58 = (error: string): string =>
+    render([done({ state: 'failed', error })], 58)[1];
+  assert.match(at58('boom'), / 0:22 {2}boom$/);
+  assert.match(at58('x'.repeat(40)), / 0:22$/);
+});
+
+test('a reason that only repeats the status is left out', () => {
+  const [, timedOut] = render([
+    done({ state: 'timed_out', error: 'timed out after 600000ms' }),
+  ]);
+  assert.match(timedOut, / timed out .* 0:22$/);
+  const [, cancelled] = render([
+    done({ state: 'cancelled', error: 'aborted' }),
+  ]);
+  assert.match(cancelled, / cancelled .* 0:22$/);
+});
+
+test('usage: cost when reported, tokens otherwise', () => {
+  const lines = render([
+    run({ id: 'a', cost: 0.42 }),
+    run({ id: 'b', cost: 0, tokens: { input: 25_000, output: 800 } }),
+    run({ id: 'c', cost: 0, tokens: { input: 0, output: 0 } }),
+  ]);
+  assert.match(lines[1], / bash {6,}\$0\.42 {2}0:41$/);
+  assert.match(lines[2], / bash +25\.8k tok {2}0:41$/);
+  assert.match(lines[3], / bash +0:41$/);
+});
+
+test('the generation shows after the name from the second one on', () => {
+  const lines = render([
+    run({ id: 'a', generation: 1 }),
+    run({ id: 'b', name: 'fixer', generation: 2 }),
+  ]);
+  assert.match(lines[1], /^⠋ spiral-executor {2}/);
+  assert.match(lines[2], /^⠋ fixer g2 {2,}ralph/);
+  // the name clips, the generation stays
+  const long = render([run({ name: 'n'.repeat(40), generation: 3 })]);
+  assert.match(long[1], /^⠋ n{16}… g3 {2}/);
 });
 
 test('failed, bad output, timed out, cancelled: own glyphs', () => {
@@ -203,26 +345,30 @@ test('extra rows collapse into "+N more"', () => {
   assert.doesNotMatch(render(runs.slice(0, MAX_ROWS)).at(-1)!, /more/);
 });
 
-test('narrow widths drop model, then context, then tokens; never wrap', () => {
+test('narrow widths drop model, then usage, then context; never wrap', () => {
   const runs = [run({}), waiting(), done()];
   const at = (width: number): string => render(runs, width)[2];
   assert.match(at(80), /gpt-6-luna/);
   const noModel = at(70);
   assert.doesNotMatch(noModel, /gpt-6/);
-  assert.match(noModel, /ralph US-002/);
-  const noContext = at(55);
+  assert.match(noModel, /ralph US-002 .*\$0\.02/);
+  const noUsage = at(60);
+  assert.doesNotMatch(noUsage, /\$/);
+  assert.match(noUsage, /ralph US-002/);
+  const noContext = at(50);
   assert.doesNotMatch(noContext, /ralph/);
-  assert.match(noContext, /12\.3k/);
-  const noTokens = at(50);
-  assert.doesNotMatch(noTokens, /12\.3k/);
-  assert.match(noTokens, /^⠋ spiral-executor .*bash .*0:41$/);
+  assert.match(noContext, /^⠋ spiral-executor .*bash .*0:41$/);
 
   const long = [
     run({
       name: 'n'.repeat(80),
       context: 'c'.repeat(80),
       currentTool: 'x'.repeat(80),
+      generation: 12,
+      lastActivityAt: NOW - 3 * MIN,
+      lastStepAt: NOW - 3 * MIN,
     }),
+    done({ id: 'f', state: 'failed', error: 'e\n'.repeat(80) }),
     ...runs,
   ];
   for (const width of [160, 100, 60, 40, 24, 12, 3, 1]) {
@@ -231,7 +377,7 @@ test('narrow widths drop model, then context, then tokens; never wrap', () => {
       assert.doesNotMatch(line, /\n/);
     }
   }
-  assert.ok(render(long, 100).some((line) => /^⠋ nnn+… /.test(line)));
+  assert.ok(render(long, 100).some((line) => /^▲ nnn+… g12 /.test(line)));
   assert.deepEqual(render(runs, 0), []);
 });
 
@@ -429,7 +575,7 @@ test('a burst of changes refreshes at most twice until timers fire', () => {
   mount(ctx, c.options(reg));
   const before = reg.lists;
   for (let i = 0; i < 50; i += 1) {
-    reg.runs = [run({ turns: i })];
+    reg.runs = [run({ currentTool: `tool-${i}` })];
     reg.emit();
   }
   assert.ok(reg.lists - before <= 2, `${reg.lists - before} refreshes`);
@@ -437,7 +583,7 @@ test('a burst of changes refreshes at most twice until timers fire', () => {
   // the trailing refresh picks up the last change
   c.settle();
   assert.equal(reg.lists - before, 2);
-  assert.match(ctx.draw()![1], / t49 /);
+  assert.match(ctx.draw()![1], / tool-49 /);
   c.settle();
   assert.equal(c.cooldowns().length, 0, 'quiet: cooldown ends');
 });
