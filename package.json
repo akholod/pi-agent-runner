@@ -1,6 +1,6 @@
 {
   "name": "pi-agent-runner",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "In-process child-agent runner for Pi plugins, built on createAgentSession",
   "keywords": [
     "pi",
