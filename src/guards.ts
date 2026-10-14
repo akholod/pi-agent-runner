@@ -6,7 +6,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 export interface GuardConfig {
-  /** Tool names the child may call; undefined = no restriction. */
+  /**
+   * Tool names the child may call; undefined = no restriction. An entry with
+   * `*` is a pattern that matches any characters there, as in Pi's `--tools`
+   * (`mcp__codegraph__*`).
+   */
   allowedTools?: string[];
   /** Block destructive git commands. */
   git: boolean;
@@ -224,12 +228,30 @@ const pathsOf = (input: Record<string, unknown>) => {
   return found;
 };
 
+const patternCache = new Map<string, RegExp>();
+
+// Same matching as Pi's tool lists: exact names, or `*` for any characters.
+const toolAllowed = (allowed: string[], name: string) =>
+  allowed.some((entry) => {
+    if (!entry.includes('*')) return entry === name;
+    let pattern = patternCache.get(entry);
+    if (!pattern) {
+      const source = entry
+        .split('*')
+        .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+        .join('.*');
+      pattern = new RegExp(`^${source}$`);
+      patternCache.set(entry, pattern);
+    }
+    return pattern.test(name);
+  });
+
 const blockReason = (
   config: GuardConfig,
   call: { toolName: string; input: unknown },
 ): string => {
   const { allowedTools, git, readRoots, cwd } = config;
-  if (allowedTools && !allowedTools.includes(call.toolName)) {
+  if (allowedTools && !toolAllowed(allowedTools, call.toolName)) {
     return `tool '${call.toolName}' is not allowed for this agent`;
   }
   const input =

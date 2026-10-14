@@ -21,6 +21,7 @@ import {
   PERMISSION_DECISION_CHANNEL,
   PERMISSION_PROMPT_CHANNEL,
 } from './human-wait.ts';
+import { activeMcpServers } from './mcp.ts';
 import {
   ACTIVITY_EVENTS,
   absoluteExtensionPaths,
@@ -118,6 +119,25 @@ const siblingExtension = (name: string) => {
   return path.join(path.dirname(self), `${name}${path.extname(self)}`);
 };
 
+/**
+ * Extension modules in load order: the guard, the caller's, the installed
+ * packages, Pi's MCP extension for the child's servers, then the tail hooks.
+ */
+export const processExtensionPaths = (
+  spec: ChildSpec,
+  installed: string[],
+  mcpServers: string[],
+) => {
+  const mcp = mcpServers.length > 0 ? [siblingExtension('child-mcp')] : [];
+  return [
+    siblingExtension('child-extension'),
+    ...absoluteExtensionPaths(spec),
+    ...installed,
+    ...mcp,
+    siblingExtension('child-extension-tail'),
+  ];
+};
+
 interface Response {
   success: boolean;
   error?: string;
@@ -158,6 +178,7 @@ const openProcessSession = async (
     options.resolveExtensions ??
     (async (s: ChildSpec) => (await resolveExtensionPaths(s)).paths);
   const installed = await resolve(spec);
+  const mcpServers = activeMcpServers(spec.mcpServers, spec.cwd);
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-agent-runner-'));
   const cleanupDir = () => fs.rmSync(dir, { recursive: true, force: true });
@@ -167,6 +188,7 @@ const openProcessSession = async (
       guard: spec.guard,
       label: spec.label,
       resultSchema: spec.resultTool?.schema,
+      mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
     };
     const configFile = path.join(dir, 'config.json');
     fs.writeFileSync(configFile, JSON.stringify(config));
@@ -179,12 +201,7 @@ const openProcessSession = async (
       model,
       thinking: spec.thinking ?? parent.ctx.thinkingLevel,
       systemPrompt,
-      extensionPaths: [
-        siblingExtension('child-extension'),
-        ...absoluteExtensionPaths(spec),
-        ...installed,
-        siblingExtension('child-extension-tail'),
-      ],
+      extensionPaths: processExtensionPaths(spec, installed, mcpServers),
     });
     proc = spawn(command[0], [...command.slice(1), ...args], {
       cwd: spec.cwd,

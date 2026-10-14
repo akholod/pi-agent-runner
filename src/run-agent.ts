@@ -16,6 +16,7 @@ import {
   validator,
 } from './structured.ts';
 import { humanWaitTracker } from './human-wait.ts';
+import { withMcpTools } from './mcp.ts';
 import { trackRun } from './live.ts';
 import type { Tracked } from './live.ts';
 import { createPausableTimer } from './timer.ts';
@@ -80,6 +81,19 @@ export const wrapUpMessage = (structured: boolean) =>
 
 let defaultFactory: ChildSessionFactory | undefined;
 let processFactory: ChildSessionFactory | undefined;
+
+// The guard's allowlist: `tools`, plus the patterns of the MCP servers and
+// `submit_result` when the run needs them.
+const allowedTools = (
+  tools: string[] | undefined,
+  mcpServers: string[] | undefined,
+  structured: unknown,
+) => {
+  const withMcp = withMcpTools(tools, mcpServers);
+  return withMcp && structured
+    ? [...new Set([...withMcp, SUBMIT_RESULT_TOOL])]
+    : withMcp;
+};
 
 const emptyUsage = (durationMs: number): RunUsage => ({
   input: 0,
@@ -453,15 +467,17 @@ const open = async (
       policyExtensions: options.policyExtensions ?? DEFAULT_POLICY_EXTENSIONS,
       extensionFactories: options.extensionFactories,
       extensionPaths: options.extensionPaths,
+      mcpServers: options.mcpServers,
       parent: options.parent,
       depth: current,
       label: options.label?.name,
       sessionFile,
       guard: {
-        allowedTools:
-          options.tools && structured
-            ? [...new Set([...options.tools, SUBMIT_RESULT_TOOL])]
-            : options.tools,
+        allowedTools: allowedTools(
+          options.tools,
+          options.mcpServers,
+          structured,
+        ),
         git: options.gitGuard ?? true,
         readRoots: options.readRoots,
         cwd: options.cwd,

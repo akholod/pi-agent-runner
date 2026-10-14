@@ -137,3 +137,55 @@ test('read roots unset means no restriction', () => {
     undefined,
   );
 });
+
+const guard = (allowedTools: string[]): GuardConfig => ({
+  allowedTools,
+  git: true,
+  cwd: '/w',
+});
+
+test('tool patterns: a trailing * admits the prefix', () => {
+  const config = guard(['read', 'mcp__codegraph__*']);
+  const call = (toolName: string) =>
+    guardDecision(config, { toolName, input: {} });
+  assert.equal(call('mcp__codegraph__explore'), undefined);
+  assert.equal(call('mcp__codegraph__'), undefined);
+  assert.equal(call('read'), undefined);
+});
+
+test('tool patterns: other servers and exact names stay refused', () => {
+  const config = guard(['read', 'mcp__codegraph__*']);
+  const reason = (toolName: string) =>
+    guardDecision(config, { toolName, input: {} });
+  assert.match(reason('mcp__other__explore') ?? '', /not allowed/);
+  assert.match(reason('mcp__codegraph') ?? '', /not allowed/);
+  assert.match(reason('xmcp__codegraph__x') ?? '', /not allowed/);
+  assert.match(reason('bash') ?? '', /not allowed/);
+  // An exact entry is not a prefix.
+  assert.match(
+    guardDecision(guard(['read']), { toolName: 'readx', input: {} }) ?? '',
+    /not allowed/,
+  );
+});
+
+test('tool patterns: * inside a name and regex characters', () => {
+  const config = guard(['mcp__a_b__get_*', 'a.b']);
+  const reason = (toolName: string) =>
+    guardDecision(config, { toolName, input: {} });
+  assert.equal(reason('mcp__a_b__get_x'), undefined);
+  assert.notEqual(reason('mcp__a_b__set_x'), undefined);
+  assert.equal(reason('a.b'), undefined);
+  assert.notEqual(reason('axb'), undefined);
+});
+
+test('tool patterns: nested calls are checked the same way', () => {
+  const config = guard(['codemode', 'mcp__codegraph__*']);
+  const nested = (toolName: string) =>
+    guardDecision(config, {
+      toolName,
+      input: {},
+      parentToolCallId: 'call-1',
+    } as { toolName: string; input: unknown });
+  assert.equal(nested('mcp__codegraph__explore'), undefined);
+  assert.match(nested('mcp__other__explore') ?? '', /not allowed/);
+});

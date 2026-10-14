@@ -28,6 +28,8 @@ export interface ChildConfig {
   label?: string;
   /** JSON schema of `submit_result`; unset = the tool is not registered. */
   resultSchema?: Record<string, unknown>;
+  /** Built-in MCP servers the child connects; unset = none. */
+  mcpServers?: string[];
 }
 
 export const readChildConfig = (): ChildConfig => {

@@ -126,7 +126,8 @@ backends behave the same.
 
 Guards: an inline extension loaded before every other one refuses a call
 before any permission gate can open a dialog. It enforces the `tools`
-allowlist (nested calls included), `gitGuard` (default on: blocks `git push`,
+allowlist (nested calls included; an entry with `*` is a pattern, so
+`mcp__codegraph__*` admits every tool of that server), `gitGuard` (default on: blocks `git push`,
 `reset --hard`, `clean -f`, `branch -D`, discarding `checkout`/`restore`,
 `stash drop/clear`; a guardrail, not a sandbox) and `readRoots` (paths
 outside cwd and the roots are refused). `maxDepth` (default 1) stops a child
@@ -150,6 +151,43 @@ Caller extension modules: `extensionPaths?: string[]` (relative paths resolve
 against `cwd`) names modules whose default export is an `ExtensionFactory`.
 Same position and semantics as `extensionFactories`, but by path, so they
 work with both backends.
+
+MCP servers: `mcpServers?: string[]` names servers of the user's built-in MCP
+(Pi 1.1 `builtin:mcp`, added with `pi mcp add`, stored in
+`~/.pi/agent/mcp.json`) that the child may use. `extensions: { packages:
+['pi-mcp-adapter'] }` remains the way to hand a child an MCP adapter; do not
+combine the two.
+
+- What loads: Pi's MCP extension with a config of its own, so the child
+  connects **only the named servers**, never every enabled one. The
+  in-process backend adds it as an inline extension, replaceable like Pi's
+  (`pi-agent-runner:mcp`); the process backend loads `child-mcp.js` with
+  `-e`. `-e builtin:mcp` is not used: it would connect every enabled server
+  and cannot be restricted.
+- What the child sees: each tool as a direct tool `mcp__<server>__<tool>`
+  (every character other than a letter, digit or `_` becomes `_`, so
+  `my-srv` gives `mcp__my_srv__*`). The runner forces `exposure: "direct"`
+  for those servers, so neither `codemode` nor `tool_search` is needed or
+  loaded. Tools or servers the user marked `hidden` stay hidden; `enabled:
+false` servers are skipped. Resource tools (`list_mcp_resources`, ...) are
+  not offered.
+- Allowlist: with `tools` set, `mcp__<server>__*` is added for every server
+  (to Pi and to the guard); without `tools` nothing is restricted.
+- Cost: a server is connected per child. A stdio server is a new process per
+  child (stopped with the session, in its own process group); an HTTP server
+  is a new connection. The first prompt waits up to 10 s for the connections.
+  There is no sharing with the parent: Pi keeps its MCP state per session.
+- OAuth tokens are shared through `~/.pi/agent/mcp-auth.json`; a server that
+  needs a sign-in is unavailable to the child (it cannot ask).
+- The user may have turned the built-in off (`"extensions":
+["-builtin:mcp"]`, usually because pi-mcp-adapter replaces it). Then
+  `mcpServers` is ignored and the child gets no MCP tools. Check first with
+  the exported helpers and pick the adapter instead:
+  `builtinMcpDisabled(cwd?)` and `builtinMcpServers(cwd?)` (each returns
+  `{ name, enabled }[]`). Both read `~/.pi/agent` (`PI_CODING_AGENT_DIR`);
+  with `cwd` they also consider `<cwd>/.pi/mcp.json` and
+  `<cwd>/.pi/settings.json`, but only when Pi's trust store trusts that
+  project (the child itself applies the same rule).
 
 Backend: `backend?: 'in-process' | 'process'` (default `'in-process'`).
 `'process'` runs the child as a `pi --mode rpc` subprocess in its own

@@ -147,3 +147,58 @@ describe('live process backend', { skip: !LIVE && 'set RUNNER_LIVE=1' }, () => {
     assert.equal(result.model, 'openai-codex/gpt-6-luna');
   });
 });
+
+// Built-in MCP in a child: an agent dir of its own (the operator's auth
+// linked in) configures the echo server, so no real MCP setup is touched.
+describe('live MCP', { skip: !LIVE && 'set RUNNER_LIVE=1' }, () => {
+  const model = 'openai-codex/gpt-6-luna';
+  const echo = path.join(import.meta.dirname, 'fixtures', 'mcp-echo.mjs');
+
+  const withMcpAgentDir = async (body: (cwd: string) => Promise<void>) => {
+    const real = pi.getAgentDir();
+    const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-mcp-'));
+    for (const name of ['auth.json', 'models.json', 'models-store.json']) {
+      if (fs.existsSync(path.join(real, name))) {
+        fs.symlinkSync(path.join(real, name), path.join(agentDir, name));
+      }
+    }
+    fs.writeFileSync(
+      path.join(agentDir, 'mcp.json'),
+      JSON.stringify({
+        mcpServers: { echo: { command: process.execPath, args: [echo] } },
+      }),
+    );
+    const before = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      await body(workspace());
+    } finally {
+      if (before === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = before;
+      fs.rmSync(agentDir, { recursive: true, force: true });
+    }
+  };
+
+  for (const backend of ['in-process', 'process'] as const) {
+    test(`${backend}: child calls an MCP tool`, TIMEOUT, async () => {
+      await withMcpAgentDir(async (cwd) => {
+        const result = await runAgent({
+          parent: await parentContext(cwd),
+          cwd,
+          model,
+          backend,
+          systemPrompt: 'You are a terse test agent. Answer in one line.',
+          task:
+            'Call the mcp__echo__echo tool with text "ping", then reply ' +
+            'exactly: MCP_OK followed by the tool result.',
+          tools: ['read'],
+          mcpServers: ['echo'],
+          timeoutMs: 120_000,
+        });
+        assert.equal(result.status, 'completed', result.error);
+        assert.match(String(result.value), /MCP_OK.*echo:ping/);
+        assert.ok(result.usage.toolCalls >= 1);
+      });
+    });
+  }
+});

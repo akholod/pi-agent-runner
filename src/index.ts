@@ -24,6 +24,8 @@ export type { ProcessSessionOptions } from './process-session.ts';
 // before the first run is also seen.
 export { humanWaitTracker } from './human-wait.ts';
 export type { HumanWaitTracker } from './human-wait.ts';
+export { builtinMcpDisabled, builtinMcpServers } from './mcp.ts';
+export type { BuiltinMcpServer } from './mcp.ts';
 export { dangerousGitCommand, guardDecision } from './guards.ts';
 export type { GuardConfig } from './guards.ts';
 export { liveRuns, isPossiblyStuck, STUCK_AFTER_MS } from './live.ts';

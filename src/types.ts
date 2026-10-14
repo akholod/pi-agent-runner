@@ -55,8 +55,25 @@ export interface RunAgentOptions {
   systemPrompt: string;
   /** User message that starts the run. */
   task: string;
-  /** Tool allowlist; undefined keeps Pi's defaults. */
+  /**
+   * Tool allowlist; undefined keeps Pi's defaults. An entry with `*` is a
+   * pattern for any characters there (`mcp__codegraph__*`), checked by the
+   * runner's guard and by Pi alike.
+   */
   tools?: string[];
+  /**
+   * Names of the user's built-in MCP servers (`pi mcp add`, `mcp.json`) the
+   * child may use. Loads Pi's `builtin:mcp` into the child restricted to
+   * these servers, with their tools declared directly as
+   * `mcp__<server>__<tool>` (no codemode or tool_search), and adds
+   * `mcp__<server>__*` to the `tools` allowlist when there is one. Skipped
+   * when the user disabled it (`"extensions": ["-builtin:mcp"]`, see
+   * `builtinMcpDisabled`) or a server is disabled or missing. Each child
+   * starts its own connections (a stdio server is spawned per child) and
+   * waits up to 10 seconds for them before the first prompt. Do not combine
+   * with an MCP extension package such as pi-mcp-adapter. Both backends.
+   */
+  mcpServers?: string[];
   /** `provider/id`, or `inherit` for the parent's current model. */
   model?: string;
   thinking?: ThinkingLevel | 'inherit';

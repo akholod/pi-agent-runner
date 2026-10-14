@@ -13,6 +13,7 @@ import type {
 import { Unsafe as unsafe } from 'typebox';
 import { guardDecision } from './guards.ts';
 import type { GuardConfig } from './guards.ts';
+import { activeMcpServers, childMcpExtension } from './mcp.ts';
 import { SUBMIT_RESULT_TOOL, toolParameters } from './structured.ts';
 import type { Submission } from './structured.ts';
 import type { ExtensionMode, ParentContext, ThinkingLevel } from './types.ts';
@@ -46,6 +47,8 @@ export interface ChildSpec {
    * RunAgentOptions.extensionPaths.
    */
   extensionPaths?: string[];
+  /** Built-in MCP servers the child may use; see RunAgentOptions.mcpServers. */
+  mcpServers?: string[];
   parent: ParentContext;
   /** Nesting depth of the code starting this child; unset = 0. */
   depth?: number;
@@ -119,6 +122,7 @@ const ACTIVE_AGENT_NAME = 'pi-agent-runner:active-agent';
 const ACTIVE_AGENT_PATH = `<inline:${ACTIVE_AGENT_NAME}>`;
 const CALLER_NAME = 'caller-extension';
 const CALLER_PREFIX = `<inline:${CALLER_NAME}-`;
+const MCP_NAME = 'pi-agent-runner:mcp';
 const TAIL_NAMES = [
   'pi-agent-runner:freeze-prompt',
   'pi-agent-runner:tool-start',
@@ -363,16 +367,34 @@ export const submitResultTool = (resultTool: {
   },
 });
 
-// Guard and active agent first, then the caller's extensions, then the
-// freeze, tool-start and activity hooks (see orderRunnerExtensions).
+// Guard and active agent first, then the caller's extensions, then Pi's
+// built-in MCP when the child gets servers, then the freeze, tool-start and
+// activity hooks (see orderRunnerExtensions).
+interface InlineHook {
+  name: string;
+  factory: ExtensionFactory;
+  /** Left out when another extension registers `/mcp` (pi-mcp-adapter). */
+  replaceable?: boolean;
+}
+
 export const buildInlineFactories = (spec: ChildSpec) => {
-  const factories = [
+  const servers = activeMcpServers(spec.mcpServers, spec.cwd);
+  const mcp: InlineHook[] = [];
+  if (servers.length > 0) {
+    mcp.push({
+      name: MCP_NAME,
+      factory: childMcpExtension(servers),
+      replaceable: true,
+    });
+  }
+  const factories: InlineHook[] = [
     guardHook(spec),
     activeAgentHook(spec),
     ...(spec.extensionFactories ?? []).map((factory, index) => ({
       name: `${CALLER_NAME}-${index}`,
       factory,
     })),
+    ...mcp,
     freezeHook,
     toolStartHook(spec),
     activityHook(spec),
