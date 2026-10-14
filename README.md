@@ -8,7 +8,7 @@ session.
 agents ─────────────────────────────────────────── 2 running · 1 waiting
 ⠋ spiral-executor  ralph US-002  gpt-6-luna  t4  bash             12.3k  0:41
 ⏸ spiral-critic    ralplan #2    opus-5      t2  waiting for you         1:05
-✓ explorer         opium         gpt-6-luna  t6  done              8.1k  0:22
+✓ scout            opium         gpt-6-luna  t6  done              8.1k  0:22
 ```
 
 **Just want this in Pi?** You don't need this library directly. Install one
@@ -33,8 +33,8 @@ This library is that plumbing, solved once.
 ## Who uses it
 
 - **[Opium](https://github.com/akholod/pi-opium)** turns your Pi session
-  into an orchestrator. It hands work to specialists (explorer, librarian,
-  oracle, designer, fixer…), runs them in the background, and asks a
+  into an orchestrator. It hands work to specialists (scout, researcher,
+  senior, designer, fixer…), runs them in the background, and asks a
   council of different models when a decision matters.
 - **[Spiral](https://github.com/akholod/pi-spiral)**: `/ralplan` gets a plan
   past a planner, an architect and a critic; `/ralph` turns it into stories
