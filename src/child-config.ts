@@ -24,6 +24,8 @@ export const TAIL_COMMAND = 'pi-agent-runner-tail';
 
 export interface ChildConfig {
   guard: GuardConfig;
+  /** `label.name`; announced as the child's active agent when set. */
+  label?: string;
   /** JSON schema of `submit_result`; unset = the tool is not registered. */
   resultSchema?: Record<string, unknown>;
 }

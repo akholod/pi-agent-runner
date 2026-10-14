@@ -312,6 +312,23 @@ test('process: the child shows up in the live registry', async () => {
   assert.equal(run.turns, 1);
 });
 
+test('process: label.name goes into the child config', async () => {
+  const dir = scratch();
+  const copy = path.join(dir, 'config.json');
+  const env = { FAKE_CONFIG_COPY: copy };
+  await runAgent(options('scenario:normal', { label: { name: 'proc-name' } }), {
+    factory: factory(env),
+  });
+  const named = JSON.parse(fs.readFileSync(copy, 'utf8')) as { label?: string };
+  assert.equal(named.label, 'proc-name');
+  await runAgent(options('scenario:normal'), { factory: factory(env) });
+  const unnamed = JSON.parse(fs.readFileSync(copy, 'utf8')) as {
+    label?: string;
+  };
+  assert.equal(unnamed.label, undefined);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('buildProcessArgs maps the spec to pi flags', () => {
   const spec = {
     cwd: '/w',

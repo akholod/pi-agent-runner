@@ -55,6 +55,7 @@ test('caller factories sit between the guard and freeze/tool-start', () => {
     inline.map((e) => e.name),
     [
       'pi-agent-runner:guard',
+      'pi-agent-runner:active-agent',
       'caller-extension-0',
       'caller-extension-1',
       'pi-agent-runner:freeze-prompt',

@@ -184,6 +184,14 @@ timers pause meanwhile. `'deny'` leaves the child unregistered, so it has no
 UI and an `ask` is refused at once; only explicit `allow` passes. Use it for
 runs nobody is watching.
 
+When `label.name` is set, the runner announces it to pi-permission-system as
+the child's active agent (an `active_agent` entry in the child's session).
+Forwarded prompts show it as the requester, and it selects the per-agent
+`permission:` frontmatter from `~/.pi/agent/agents/<name>.md` or
+`<cwd>/.pi/agents/<name>.md`, if present. The entry is also kept in the
+transcript, so a `pi --fork` take-over inherits the name. Without a label
+the requester stays `unknown`.
+
 Behavior the spikes settled:
 
 - Model runtime: a fresh `ModelRuntime` plus the parent's providers.
@@ -200,7 +208,8 @@ Behavior the spikes settled:
 
 `label: { name, context? }` on `runAgent`/`startAgent` names a run for
 display (`name` defaults to `agent`; `context` is free text such as
-`ralph US-002`).
+`ralph US-002`). A set `name` is also the child's agent name for
+pi-permission-system (see Permission asks above).
 
 Every child is listed in a process-wide registry, shared by all installed
 copies of the runner (it lives on `globalThis`, so Spiral's and Opium's

@@ -165,6 +165,7 @@ const openProcessSession = async (
   try {
     const config: ChildConfig = {
       guard: spec.guard,
+      label: spec.label,
       resultSchema: spec.resultTool?.schema,
     };
     const configFile = path.join(dir, 'config.json');

@@ -4,6 +4,7 @@
 //   FAKE_LOG             appended with `term` on SIGTERM
 //   FAKE_IGNORE_SHUTDOWN stdin close does not end the process
 //   FAKE_IGNORE_TERM     SIGTERM is ignored
+//   FAKE_CONFIG_COPY     receives a copy of the child config file
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 
@@ -14,6 +15,13 @@ if (process.env.FAKE_IGNORE_TERM) {
   process.on('SIGTERM', () => {
     if (process.env.FAKE_LOG) fs.appendFileSync(process.env.FAKE_LOG, 'term\n');
   });
+}
+
+if (process.env.FAKE_CONFIG_COPY) {
+  fs.copyFileSync(
+    process.env.PI_AGENT_RUNNER_CHILD_CONFIG,
+    process.env.FAKE_CONFIG_COPY,
+  );
 }
 
 const assistant = (text, extra = {}) => ({

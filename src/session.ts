@@ -115,6 +115,8 @@ export const DEFAULT_PROVIDER_EXTENSIONS: Record<string, string> = {
 
 const GUARD_NAME = 'pi-agent-runner:guard';
 const GUARD_PATH = `<inline:${GUARD_NAME}>`;
+const ACTIVE_AGENT_NAME = 'pi-agent-runner:active-agent';
+const ACTIVE_AGENT_PATH = `<inline:${ACTIVE_AGENT_NAME}>`;
 const CALLER_NAME = 'caller-extension';
 const CALLER_PREFIX = `<inline:${CALLER_NAME}-`;
 const TAIL_NAMES = [
@@ -136,7 +138,9 @@ export const orderRunnerExtensions = <T extends { path: string }>(
   extensions: T[],
 ): T[] => {
   const tail = TAIL_NAMES.map((name) => `<inline:${name}>`);
-  const guard = extensions.filter((e) => e.path === GUARD_PATH);
+  const guard = extensions.filter(
+    (e) => e.path === GUARD_PATH || e.path === ACTIVE_AGENT_PATH,
+  );
   const callers = extensions.filter((e) => e.path.startsWith(CALLER_PREFIX));
   const last = tail.flatMap((path) =>
     extensions.filter((e) => e.path === path),
@@ -144,6 +148,7 @@ export const orderRunnerExtensions = <T extends { path: string }>(
   const others = extensions.filter(
     (e) =>
       e.path !== GUARD_PATH &&
+      e.path !== ACTIVE_AGENT_PATH &&
       !e.path.startsWith(CALLER_PREFIX) &&
       !tail.includes(e.path),
   );
@@ -205,6 +210,43 @@ export const guardHook = (
     api.on('tool_call', (event) => {
       const reason = guardDecision(spec.guard, event);
       return reason ? { block: true, reason } : undefined;
+    });
+  },
+});
+
+/** Session entry type pi-permission-system reads the child's name from. */
+export const ACTIVE_AGENT_ENTRY = 'active_agent';
+
+/** Name in the newest `active_agent` entry, as pi-permission-system reads. */
+export const latestActiveAgent = (
+  entries: readonly { type: string; customType?: string; data?: unknown }[],
+) => {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry?.type !== 'custom' || entry.customType !== ACTIVE_AGENT_ENTRY) {
+      continue;
+    }
+    const { name } = (entry.data ?? {}) as { name?: unknown };
+    if (typeof name === 'string' && name.trim()) return name.trim();
+  }
+  return null;
+};
+
+// pi-permission-system names a child from an `active_agent` entry in the
+// child's own session: the requester shown in forwarded prompts and the
+// per-agent policy file both come from it. Written at session_start, ahead
+// of the first prompt or tool call; a resumed session already holding the
+// same name gets no duplicate.
+export const activeAgentHook = (
+  spec: Pick<ChildSpec, 'label'>,
+): { name: string; factory: ExtensionFactory } => ({
+  name: ACTIVE_AGENT_NAME,
+  factory: (api: ExtensionAPI) => {
+    const name = spec.label?.trim();
+    if (!name) return undefined;
+    api.on('session_start', (_event, ctx) => {
+      if (latestActiveAgent(ctx.sessionManager.getEntries()) === name) return;
+      api.appendEntry(ACTIVE_AGENT_ENTRY, { name });
     });
   },
 });
@@ -321,11 +363,12 @@ export const submitResultTool = (resultTool: {
   },
 });
 
-// Guard first, then the caller's extensions, then the freeze, tool-start and
-// activity hooks (see orderRunnerExtensions).
+// Guard and active agent first, then the caller's extensions, then the
+// freeze, tool-start and activity hooks (see orderRunnerExtensions).
 export const buildInlineFactories = (spec: ChildSpec) => {
   const factories = [
     guardHook(spec),
+    activeAgentHook(spec),
     ...(spec.extensionFactories ?? []).map((factory, index) => ({
       name: `${CALLER_NAME}-${index}`,
       factory,
