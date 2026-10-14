@@ -27,6 +27,17 @@ export type { HumanWaitTracker } from './human-wait.ts';
 export { dangerousGitCommand, guardDecision } from './guards.ts';
 export type { GuardConfig } from './guards.ts';
 export { liveRuns, isPossiblyStuck, STUCK_AFTER_MS } from './live.ts';
-export type { LiveRegistry, LiveRun, LiveState } from './live.ts';
+export type {
+  ActivityEntry,
+  LiveRegistry,
+  LiveRun,
+  LiveState,
+  RunControl,
+} from './live.ts';
 export { mountRunsView, renderRunsView } from './view.ts';
 export type { MountOptions, RunsView } from './view.ts';
+// `/agents`: pick a child run, see its recent activity, cancel or take it over.
+// Call `registerAgentsCommand(pi)` at extension load; copies of this package
+// in other extensions share one registration.
+export { registerAgentsCommand } from './agents-command.ts';
+export type { AgentsCommandOptions } from './agents-command.ts';

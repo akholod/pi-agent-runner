@@ -8,7 +8,15 @@ import {
   STUCK_AFTER_MS,
 } from '../src/index.ts';
 import type { ChildEvent, LiveRun } from '../src/index.ts';
-import { EVICT_AFTER_MS, MAX_LIVE_RUNS, trackRun } from '../src/live.ts';
+import {
+  EVICT_AFTER_MS,
+  MAX_ACTIVITY,
+  MAX_LIVE_RUNS,
+  liveStore,
+  runActivity,
+  runControl,
+  trackRun,
+} from '../src/live.ts';
 import { applyRequestedModel } from '../src/session.ts';
 import {
   FakeSession,
@@ -342,6 +350,107 @@ test('the registry is bounded, disposed runs go first', () => {
   assert.equal(find(gone), undefined);
   assert.equal(find(extra.at(-1) as string)?.state, 'starting');
   keep.dispose();
+});
+
+test('activity buffer and control are evicted with the run', () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const id = sessionId();
+    const tracked = trackRun({ id, events: fakeBus() });
+    tracked.control({ cancel: async () => {} });
+    tracked.generationStart();
+    assert.equal(runActivity(id)?.length, 1);
+    assert.ok(runControl(id));
+    // the control goes at dispose, the buffer stays for a look back
+    tracked.dispose();
+    assert.equal(runControl(id), undefined);
+    assert.equal(runActivity(id)?.length, 1);
+    mock.timers.tick(EVICT_AFTER_MS);
+    assert.equal(runActivity(id), undefined);
+    assert.equal(liveStore().activity.has(id), false);
+    assert.equal(liveStore().controls.has(id), false);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('a reused id starts a fresh buffer and drops the old control', () => {
+  const id = sessionId();
+  const bus = fakeBus();
+  const old = trackRun({ id, events: bus });
+  old.control({ cancel: async () => {} });
+  old.generationStart();
+  const fresh = trackRun({ id, events: bus });
+  assert.equal(runActivity(id)?.length, 0);
+  assert.equal(runControl(id), undefined);
+  // the replaced run no longer reaches the new one
+  old.control({ cancel: async () => {} });
+  old.dispose();
+  assert.equal(runControl(id), undefined);
+  assert.equal(runActivity(id)?.length, 0);
+  fresh.dispose();
+});
+
+test('the buffer is capped and only a running generation fills it', () => {
+  const id = sessionId();
+  const tracked = trackRun({ id, events: fakeBus() });
+  tracked.activity({
+    type: 'tool_execution_start',
+    toolCallId: 'x',
+    toolName: 'bash',
+  });
+  assert.deepEqual(runActivity(id), []);
+  tracked.generationStart();
+  for (let i = 0; i < MAX_ACTIVITY + 5; i++) {
+    tracked.activity({
+      type: 'tool_execution_start',
+      toolCallId: `t${i}`,
+      toolName: 'read',
+      args: { path: `f${i}` },
+    });
+  }
+  const entries = runActivity(id) ?? [];
+  assert.equal(entries.length, MAX_ACTIVITY);
+  assert.equal(entries.at(-1)?.text, `read f${MAX_ACTIVITY + 4}`);
+  tracked.generationEnd(
+    'failed',
+    { input: 0, output: 0, cost: 0 },
+    'boom\nbad',
+  );
+  assert.deepEqual(
+    runActivity(id)?.at(-1)?.text,
+    'generation 1 failed: boom bad',
+  );
+  tracked.dispose();
+});
+
+test('a store from an older copy gets the new fields', () => {
+  const key = Symbol.for('pi-agent-runner:live:v1');
+  const holder = globalThis as Record<symbol, Record<string, unknown>>;
+  const current = holder[key];
+  const { activity, controls } = current;
+  delete current.activity;
+  delete current.controls;
+  try {
+    const store = liveStore();
+    assert.ok(store.activity instanceof Map);
+    assert.ok(store.controls instanceof Map);
+    assert.equal(store, current);
+  } finally {
+    current.activity = activity;
+    current.controls = controls;
+  }
+});
+
+test('trackRun records the transcript path', () => {
+  const id = sessionId();
+  const tracked = trackRun({
+    id,
+    events: fakeBus(),
+    transcriptPath: '/tmp/t.jsonl',
+  });
+  assert.equal(find(id)?.transcriptPath, '/tmp/t.jsonl');
+  tracked.dispose();
 });
 
 test('list returns copies', () => {

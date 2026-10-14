@@ -508,6 +508,7 @@ const open = async (
     name: options.label?.name,
     context: options.label?.context,
     model: session.modelId,
+    transcriptPath: sessionFile,
     events: options.parent.events,
   });
   live.run = tracked;
@@ -803,6 +804,8 @@ const open = async (
       return disposing;
     },
   };
+
+  tracked.control({ cancel: () => handle.abort() });
 
   return {
     handle,

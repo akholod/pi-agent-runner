@@ -3,7 +3,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
-import { startAgent } from '../src/index.ts';
+import { liveRuns, startAgent } from '../src/index.ts';
+import { runControl } from '../src/live.ts';
 import type { StartAgentOptions } from '../src/index.ts';
 import {
   PERMISSION_DECISION_CHANNEL,
@@ -375,4 +376,41 @@ test('per-generation timeout and signal; session stays usable', async () => {
   assert.equal(session.prompts.length, 2);
   assert.equal((await handle.run('four')).status, 'completed');
   assert.equal(session.disposes, 0);
+});
+
+test('the registry control aborts a generation, session kept', async () => {
+  const session = new FakeSession();
+  session.sessionId = 'ctl-1';
+  session.script = (s, n) => {
+    if (n === 1) return hangUntilAbort(s);
+    s.messages.push(assistant('again'));
+    return Promise.resolve();
+  };
+  const { handle } = await start(session);
+  const control = runControl('ctl-1');
+  assert.ok(control);
+  const first = handle.run('one');
+  await sleep(5);
+  await control.cancel();
+  assert.equal((await first).status, 'cancelled');
+  assert.equal(handle.state, 'idle');
+  assert.equal(session.disposes, 0);
+  // nothing running: a late cancel is harmless
+  await control.cancel();
+  assert.equal((await handle.run('two')).status, 'completed');
+  await handle.dispose();
+  assert.equal(runControl('ctl-1'), undefined);
+});
+
+test('the registry records the transcript path of the handle', async () => {
+  const dir = tempDir();
+  const transcriptPath = path.join(dir, 'child.jsonl');
+  const session = new FakeSession();
+  session.sessionId = 'ctl-2';
+  const { handle } = await start(session, base({ transcriptPath }));
+  const run = liveRuns()
+    .list()
+    .find((r) => r.id === 'ctl-2');
+  assert.equal(run?.transcriptPath, transcriptPath);
+  await handle.dispose();
 });
