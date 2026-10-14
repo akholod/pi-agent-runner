@@ -6,6 +6,8 @@ import {
   DEFAULT_PROVIDER_EXTENSIONS,
   createPiSessionFactory,
 } from './session.ts';
+import { inheritedDepth } from './child-config.ts';
+import { createProcessSessionFactory } from './process-session.ts';
 import {
   SUBMIT_RESULT_TOOL,
   correctionPrompt,
@@ -64,6 +66,7 @@ const depthStore = ((globalThis as Record<symbol, unknown>)[DEPTH_KEY] ??=
 const RECENT_OUTPUT_CHARS = 200;
 
 let defaultFactory: ChildSessionFactory | undefined;
+let processFactory: ChildSessionFactory | undefined;
 
 const emptyUsage = (durationMs: number): RunUsage => ({
   input: 0,
@@ -263,12 +266,21 @@ const open = async (
   if (signal?.aborted) {
     throw new StartError('cancelled', 'aborted before start');
   }
-  const current = depthStore.getStore() ?? 0;
+  // A process-backend child has no store; its parent passes the depth down.
+  const current = depthStore.getStore() ?? inheritedDepth();
   const max = options.maxDepth ?? 1;
   if (current >= max) {
     throw new StartError(
       'failed',
       `nesting limit reached: depth ${current} >= maxDepth ${max}`,
+    );
+  }
+  const backend = options.backend ?? 'in-process';
+  if (backend === 'process' && options.extensionFactories?.length) {
+    throw new StartError(
+      'failed',
+      'extensionFactories cannot cross the process boundary of the ' +
+        'process backend; pass extensionPaths instead',
     );
   }
   const structured =
@@ -300,7 +312,14 @@ const open = async (
     fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
   }
 
-  const factory = deps.factory ?? (defaultFactory ??= createPiSessionFactory());
+  let factory = deps.factory;
+  if (!factory && backend === 'process') {
+    processFactory ??= createProcessSessionFactory();
+    factory = processFactory;
+  } else if (!factory) {
+    defaultFactory ??= createPiSessionFactory();
+    factory = defaultFactory;
+  }
   const creation = createControl(options.parent.events, {
     ...creationLimits,
     signal,
@@ -326,7 +345,10 @@ const open = async (
         options.providerExtensions ?? DEFAULT_PROVIDER_EXTENSIONS,
       policyExtensions: options.policyExtensions ?? DEFAULT_POLICY_EXTENSIONS,
       extensionFactories: options.extensionFactories,
+      extensionPaths: options.extensionPaths,
       parent: options.parent,
+      depth: current,
+      label: options.label?.name,
       sessionFile,
       guard: {
         allowedTools:

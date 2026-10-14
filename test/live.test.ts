@@ -128,3 +128,22 @@ describe('live runAgent', { skip: !LIVE && 'set RUNNER_LIVE=1' }, () => {
     });
   }
 });
+
+describe('live process backend', { skip: !LIVE && 'set RUNNER_LIVE=1' }, () => {
+  test('openai-codex/gpt-6-luna answers a trivial task', TIMEOUT, async () => {
+    const cwd = workspace();
+    const result = await runAgent({
+      parent: await parentContext(cwd),
+      cwd,
+      model: 'openai-codex/gpt-6-luna',
+      backend: 'process',
+      systemPrompt: 'You are a terse test agent. Answer in one line.',
+      task: 'Reply exactly: PROCESS_OK',
+      tools: ['read', 'ls'],
+      timeoutMs: 120_000,
+    });
+    assert.equal(result.status, 'completed', result.error);
+    assert.match(String(result.value), /PROCESS_OK/);
+    assert.equal(result.model, 'openai-codex/gpt-6-luna');
+  });
+});

@@ -121,6 +121,38 @@ them for per-call policies such as loop guards (`tool_call` / `tool_result`
 handlers). With `startAgent` each factory loads once per session, not per
 generation.
 
+Caller extension modules: `extensionPaths?: string[]` (relative paths resolve
+against `cwd`) names modules whose default export is an `ExtensionFactory`.
+Same position and semantics as `extensionFactories`, but by path, so they
+work with both backends.
+
+Backend: `backend?: 'in-process' | 'process'` (default `'in-process'`).
+`'process'` runs the child as a `pi --mode rpc` subprocess in its own
+process group. A child wedged in a tool that ignores abort is then killed:
+`abort()`, `signal`, `timeoutMs` and `toolTimeoutMs` ask Pi to abort and, if
+the run has not ended after 5 s, SIGKILL the whole group (tool grandchildren
+included) and end the generation as `cancelled` / `timed_out`. `dispose()`
+closes stdin, then SIGTERM after 2 s, then SIGKILL after another 2 s; the
+group is also killed when the parent exits and when the child dies on its
+own (the generation fails with `child process exited with code X / signal
+Y`). Trade-offs:
+
+- Slower start: a full Pi boot per child, extensions included, instead of an
+  in-process session; more memory per child.
+- `extensionFactories` cannot cross the process boundary and is refused
+  (`failed` at start); use `extensionPaths`.
+- Providers registered only in the parent are not available in the child;
+  providers from installed packages (`providerExtensions`) load as usual.
+- Dialogs of the child (permission asks) relay to `parent.ctx.ui`; pass the
+  plugin's `ctx.ui` there, otherwise every dialog is cancelled at once. The
+  timers pause while a relayed dialog is open. `permissionAsks: 'deny'`
+  cancels at once. Child notifications are forwarded to `ctx.ui.notify`,
+  prefixed with the label name.
+- The guards, prompt freeze, tool-start signal and `submit_result` run in
+  the child through the runner's own extensions (`dist/child-extension.js`,
+  `dist/child-extension-tail.js`); `submit_result` is validated in the
+  parent. Nesting depth is passed down in `PI_AGENT_RUNNER_DEPTH`.
+
 Permission asks: `permissionAsks: 'forward'` (default) registers the child
 with pi-permission-system: an `ask` opens a dialog in the parent and the
 timers pause meanwhile. `'deny'` leaves the child unregistered, so it has no

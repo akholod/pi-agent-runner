@@ -2,9 +2,12 @@
 // tests script a child without the Pi runtime; the real one wraps
 // `createAgentSession`. Design: spiral/docs/standalone-runner-plan.md
 import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import * as pi from '@earendil-works/pi-coding-agent';
 import type {
   ExtensionAPI,
+  ExtensionContext,
   ExtensionFactory,
 } from '@earendil-works/pi-coding-agent';
 import { Unsafe as unsafe } from 'typebox';
@@ -38,7 +41,16 @@ export interface ChildSpec {
   policyExtensions: string[];
   /** Caller inline extensions; see RunAgentOptions.extensionFactories. */
   extensionFactories?: ExtensionFactory[];
+  /**
+   * Caller extension modules (default export: an ExtensionFactory); see
+   * RunAgentOptions.extensionPaths.
+   */
+  extensionPaths?: string[];
   parent: ParentContext;
+  /** Nesting depth of the code starting this child; unset = 0. */
+  depth?: number;
+  /** Name shown for this child (`label.name`); unset = `agent`. */
+  label?: string;
   /** Persist the session to this file; unset keeps it in memory. */
   sessionFile?: string;
   /** Refusals applied to every tool call, nested ones included. */
@@ -185,8 +197,8 @@ export const selectExtensionPaths = (
 // Refuses calls the child must not make (see guards.ts). It is ordered
 // before every other extension, so a refused call never reaches a
 // permission gate and never opens a dialog.
-const guardHook = (
-  spec: ChildSpec,
+export const guardHook = (
+  spec: Pick<ChildSpec, 'guard'>,
 ): { name: string; factory: ExtensionFactory } => ({
   name: GUARD_NAME,
   factory: (api: ExtensionAPI) => {
@@ -200,7 +212,7 @@ const guardHook = (
 // A returned prompt is frozen for the run, so claude-bridge's prompt capture
 // matches the request. Inline factories load after path extensions, which
 // is what makes this the last word.
-const freezeHook: { name: string; factory: ExtensionFactory } = {
+export const freezeHook: { name: string; factory: ExtensionFactory } = {
   name: 'pi-agent-runner:freeze-prompt',
   factory: (api: ExtensionAPI) => {
     api.on('before_agent_start', (event) => ({
@@ -213,8 +225,8 @@ const freezeHook: { name: string; factory: ExtensionFactory } = {
 // (permission gates) run. This inline factory loads after every path
 // extension, so its handler fires only once all gates have passed: the real
 // start of the tool. Nested calls are covered by their parent call's timer.
-const toolStartHook = (
-  spec: ChildSpec,
+export const toolStartHook = (
+  spec: Pick<ChildSpec, 'onToolCall'>,
 ): { name: string; factory: ExtensionFactory } => ({
   name: 'pi-agent-runner:tool-start',
   factory: (api: ExtensionAPI) => {
@@ -233,7 +245,7 @@ const toolStartHook = (
 // Events that show the child is alive. Streaming `message_update` counts as
 // activity; provider_stream_event and the provider hooks are the only live
 // signals some providers give before their first message ends.
-const ACTIVITY_EVENTS = [
+export const ACTIVITY_EVENTS = [
   'agent_start',
   'turn_start',
   'turn_end',
@@ -272,9 +284,13 @@ type ActivitySubscriber = {
   on(type: string, handler: (event: unknown) => unknown): void;
 };
 
-const submitResultTool = (
-  resultTool: NonNullable<ChildSpec['resultTool']>,
-): { name: string; factory: ExtensionFactory } => ({
+export const submitResultTool = (resultTool: {
+  schema: Record<string, unknown>;
+  onSubmit: (
+    value: unknown,
+    ctx: ExtensionContext,
+  ) => Submission | Promise<Submission>;
+}): { name: string; factory: ExtensionFactory } => ({
   name: 'pi-agent-runner:submit-result',
   factory: (api: ExtensionAPI) => {
     api.registerTool({
@@ -283,13 +299,13 @@ const submitResultTool = (
       description: 'Submit the final structured result. This ends the run.',
       exposure: 'model-only',
       parameters: unsafe<{ value: unknown }>(toolParameters(resultTool.schema)),
-      execute(_toolCallId, params) {
-        const submitted = resultTool.onSubmit(params.value);
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        const submitted = await resultTool.onSubmit(params.value, ctx);
         if (!submitted.accepted) throw new Error(submitted.error);
         // No `terminate: true`: ending the loop inside the tool leaves
         // pi-claude-bridge's Claude Code query open, and its process keeps
         // the parent alive. One short closing reply ends the turn normally.
-        return Promise.resolve({
+        return {
           content: [
             {
               type: 'text' as const,
@@ -299,7 +315,7 @@ const submitResultTool = (
             },
           ],
           details: {},
-        });
+        };
       },
     });
   },
@@ -398,14 +414,15 @@ const resetExtensionCacheOnReload = (loader: object) => {
 // interleave extension loading.
 let loading: Promise<unknown> = Promise.resolve();
 
-const openSession = async (
-  spec: ChildSpec,
-  shutdownTimeoutMs: number,
-): Promise<ChildSession> => {
+/**
+ * Paths of the installed extensions a child loads: the requested packages,
+ * the model provider's package and the policy packages. Shared by both
+ * backends.
+ */
+export const resolveExtensionPaths = async (spec: ChildSpec) => {
   const { cwd, parent } = spec;
   const agentDir = pi.getAgentDir();
   const settingsManager = pi.SettingsManager.create(cwd, agentDir);
-
   const packageManager = new pi.DefaultPackageManager({
     cwd,
     agentDir,
@@ -416,15 +433,54 @@ const openSession = async (
   const provider = spec.model
     ? providerOf(spec.model)
     : parent.ctx.model?.provider;
-  const extensionPaths = selectExtensionPaths(
-    enabled,
-    spec.extensions,
-    spec.providerExtensions,
-    provider,
-    spec.policyExtensions,
-  );
+  return {
+    agentDir,
+    settingsManager,
+    paths: selectExtensionPaths(
+      enabled,
+      spec.extensions,
+      spec.providerExtensions,
+      provider,
+      spec.policyExtensions,
+    ),
+  };
+};
 
-  const inlineFactories = buildInlineFactories(spec);
+/** Absolute module paths of `extensionPaths`, relative ones against cwd. */
+export const absoluteExtensionPaths = (spec: ChildSpec) =>
+  (spec.extensionPaths ?? []).map((p) => path.resolve(spec.cwd, p));
+
+const importExtensionFactories = async (spec: ChildSpec) => {
+  const factories: ExtensionFactory[] = [];
+  for (const file of absoluteExtensionPaths(spec)) {
+    const loaded = (await import(pathToFileURL(file).href)) as {
+      default?: unknown;
+    };
+    if (typeof loaded.default !== 'function') {
+      throw new Error(`extension module ${file} has no default factory`);
+    }
+    factories.push(loaded.default as ExtensionFactory);
+  }
+  return factories;
+};
+
+const openSession = async (
+  spec: ChildSpec,
+  shutdownTimeoutMs: number,
+): Promise<ChildSession> => {
+  const { cwd, parent } = spec;
+  const {
+    agentDir,
+    settingsManager,
+    paths: extensionPaths,
+  } = await resolveExtensionPaths(spec);
+
+  const imported = await importExtensionFactories(spec);
+  const callerFactories = spec.extensionFactories ?? [];
+  const inlineFactories = buildInlineFactories({
+    ...spec,
+    extensionFactories: [...callerFactories, ...imported],
+  });
 
   const loader = new pi.DefaultResourceLoader({
     cwd,

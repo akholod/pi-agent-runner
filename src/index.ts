@@ -13,6 +13,8 @@ export type {
   ChildSessionFactory,
   ChildSpec,
 } from './session.ts';
+export { createProcessSessionFactory } from './process-session.ts';
+export type { ProcessSessionOptions } from './process-session.ts';
 // Call `humanWaitTracker(pi.events)` at extension load so a dialog opened
 // before the first run is also seen.
 export { humanWaitTracker } from './human-wait.ts';

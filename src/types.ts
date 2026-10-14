@@ -34,7 +34,18 @@ export interface ParentContext {
   ctx: Pick<
     ExtensionContext,
     'cwd' | 'model' | 'thinkingLevel' | 'modelRegistry' | 'sessionManager'
-  >;
+  > & {
+    /**
+     * Where a `backend: 'process'` child's dialogs (permission asks and the
+     * like) open: pass the plugin's `ctx.ui`. Without it every dialog of a
+     * process child is answered `cancelled` at once. Unused by the
+     * in-process backend, whose asks forward through `events`.
+     */
+    ui?: Pick<
+      ExtensionContext['ui'],
+      'select' | 'confirm' | 'input' | 'editor' | 'notify'
+    >;
+  };
 }
 
 export interface RunAgentOptions {
@@ -71,6 +82,26 @@ export interface RunAgentOptions {
    * reaches them.
    */
   extensionFactories?: ExtensionFactory[];
+  /**
+   * Extension modules (default export: an `ExtensionFactory`) loaded after
+   * the runner's own guards, like `extensionFactories` but by path, so they
+   * work with both backends. Relative paths resolve against `cwd`. The
+   * in-process backend imports them with Node's `import()`; the process
+   * backend hands them to Pi (`-e`).
+   */
+  extensionPaths?: string[];
+  /**
+   * `in-process` (default): the child is a Pi session inside this process.
+   * `process`: the child is a `pi --mode rpc` subprocess in its own process
+   * group, so a child wedged in a tool that ignores abort can be killed
+   * with SIGKILL (timeouts and `abort()` escalate to it automatically).
+   * Trade-offs of `process`: slower start (a full Pi boot, extensions
+   * included), more memory, and no closures across the boundary:
+   * `extensionFactories` is refused (use `extensionPaths`), and providers
+   * registered only in the parent are unavailable in the child. Permission
+   * asks relay to `parent.ctx.ui`.
+   */
+  backend?: 'in-process' | 'process';
   result?: ResultSpec;
   /** Wall-clock limit; time spent waiting for a person is not counted. */
   timeoutMs?: number;
