@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { liveRuns, runAgent } from '../src/index.ts';
+import { WRAP_UP_MESSAGE, liveRuns, runAgent } from '../src/index.ts';
 import type { ParentContext, RunAgentOptions } from '../src/index.ts';
 import {
   buildProcessArgs,
@@ -136,6 +136,52 @@ test('process: a cooperative abort needs no kill', async () => {
   );
   assert.equal(result.status, 'cancelled');
   assert.ok(Date.now() - started < 5000);
+});
+
+test('process: the wrap-up reaches the child as a steer command', async () => {
+  const result = await runAgent(
+    options('scenario:wrap', { timeoutMs: 200, wrapUpMs: 5000 }),
+    { factory: factory() },
+  );
+  assert.equal(result.status, 'completed', result.error);
+  assert.equal(result.wrappedUp, true);
+  assert.equal(result.value, `steered:${WRAP_UP_MESSAGE}`);
+});
+
+test('process: a child ignoring the wrap-up is stopped after it', async () => {
+  const result = await runAgent(
+    options('scenario:slow', { timeoutMs: 150, wrapUpMs: 150 }),
+    { factory: factory() },
+  );
+  assert.equal(result.status, 'timed_out');
+  assert.equal(
+    result.error,
+    'timed out after 150ms; no final answer within the 150ms wrap-up',
+  );
+  assert.equal(result.wrappedUp, true);
+});
+
+test('process: the idle limit fires on a silent child', async () => {
+  const result = await runAgent(
+    options('scenario:slow', { idleTimeoutMs: 200 }),
+    { factory: factory() },
+  );
+  assert.equal(result.status, 'timed_out');
+  assert.equal(result.error, 'no activity for 200ms');
+});
+
+test('process: the idle limit does not fire on a child in a tool', async () => {
+  const pidFile = path.join(scratch(), 'pids.json');
+  const result = await runAgent(
+    options('scenario:stuck', { idleTimeoutMs: 100, timeoutMs: 500 }),
+    { factory: factory({ FAKE_PIDFILE: pidFile }) },
+  );
+  // Only the wall clock ends a child that sits in a tool.
+  assert.equal(result.status, 'timed_out');
+  assert.equal(result.error, 'timed out after 500ms');
+  const { pid, grandchild } = pidsOf(pidFile);
+  assert.ok(await gone(pid));
+  assert.ok(await gone(grandchild));
 });
 
 test('process: an unexpected exit fails the run with the code', async () => {

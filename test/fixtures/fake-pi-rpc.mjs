@@ -98,9 +98,13 @@ const scenarios = {
   slow: () => {
     // Ends only when aborted.
   },
+  wrap: () => {
+    // Ends when steered, answering with the steer text; or when aborted.
+  },
 };
 
 let slowActive = false;
+let wrapActive = false;
 
 const handle = (command) => {
   const reply = (data) =>
@@ -135,7 +139,8 @@ const handle = (command) => {
       reply({ disposition: 'started' });
       const name = command.message.match(/scenario:(\w+)/)?.[1] ?? 'normal';
       begin(command.message);
-      slowActive = name === 'slow';
+      slowActive = name === 'slow' || name === 'wrap';
+      wrapActive = name === 'wrap';
       scenarios[name]();
       break;
     }
@@ -145,6 +150,14 @@ const handle = (command) => {
         out({ type: 'agent_settled', aborted: true });
       }
       // `stuck` ignores abort and never answers.
+      break;
+    case 'steer':
+      reply({});
+      if (wrapActive) {
+        wrapActive = false;
+        slowActive = false;
+        answer(`steered:${command.message}`);
+      }
       break;
     case 'clear_queue':
       reply({ steering: [], followUp: [] });

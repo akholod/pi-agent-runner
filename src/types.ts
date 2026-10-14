@@ -103,8 +103,27 @@ export interface RunAgentOptions {
    */
   backend?: 'in-process' | 'process';
   result?: ResultSpec;
-  /** Wall-clock limit; time spent waiting for a person is not counted. */
+  /**
+   * Wall-clock limit, the hard cap on cost; time spent waiting for a person
+   * is not counted. With `wrapUpMs` it starts a wrap-up instead of stopping.
+   */
   timeoutMs?: number;
+  /**
+   * Grace after `timeoutMs`: the child is steered to finish and give its
+   * final answer (or call `submit_result`), and is stopped
+   * (`timed_out`) only if it has not ended within `wrapUpMs`. A generation
+   * that ends in time keeps its normal outcome and carries
+   * `wrappedUp: true`. Paused while a person is asked. Unset or 0: the run
+   * stops at `timeoutMs`.
+   */
+  wrapUpMs?: number;
+  /**
+   * Stops the run (`timed_out`, `no activity for <n>ms`) when the child
+   * emits no event for this long. Any child event resets it; it is paused
+   * while a top-level tool runs (see `toolTimeoutMs`) and while a person is
+   * asked. Unset or 0: off.
+   */
+  idleTimeoutMs?: number;
   /**
    * Per-tool limit, counted from the moment the tool actually runs (after
    * permission gates); paused while a person is asked.
@@ -186,12 +205,16 @@ export interface RunAgentResult {
   error?: string;
   /** Absolute path, set when the transcript file was written. */
   transcriptPath?: string;
+  /** Set when `timeoutMs` expired and the child was asked to wrap up. */
+  wrappedUp?: boolean;
 }
 
 export interface StartAgentOptions extends Omit<
   RunAgentOptions,
   | 'task'
   | 'timeoutMs'
+  | 'wrapUpMs'
+  | 'idleTimeoutMs'
   | 'toolTimeoutMs'
   | 'signal'
   | 'onUpdate'
@@ -211,6 +234,8 @@ export interface StartAgentOptions extends Omit<
 /** Limits and listeners of one generation. */
 export interface TurnOptions {
   timeoutMs?: number;
+  wrapUpMs?: number;
+  idleTimeoutMs?: number;
   toolTimeoutMs?: number;
   signal?: AbortSignal;
   onUpdate?: (update: RunUpdate) => void;

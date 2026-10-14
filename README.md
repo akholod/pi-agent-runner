@@ -22,13 +22,16 @@ const result = await runAgent({
   tools: ['read', 'grep', 'find', 'ls'],
   model: 'inherit', // or 'provider/id'
   extensions: 'none', // or { packages: ['pi-mcp-adapter'] }
-  timeoutMs: 600_000,
+  idleTimeoutMs: 600_000, // stop a child that went silent
+  wrapUpMs: 180_000, // grace to answer once timeoutMs expires
+  timeoutMs: 1_800_000, // wall-clock cap
   toolTimeoutMs: 120_000,
   signal,
   onUpdate: ({ turn, tool, toolCalls, tokens, durationMs, recentOutput }) => {},
   transcriptPath: '.runs/child.jsonl', // optional
 });
-// result: { status, value, usage, model?, error?, transcriptPath? }
+// result: { status, value, usage, model?, error?, transcriptPath?,
+//            wrappedUp? }
 // usage: { input, output, cacheRead, cacheWrite, cost, turns, toolCalls,
 //          durationMs, waitedMs }
 ```
@@ -37,8 +40,9 @@ const result = await runAgent({
 
 `startAgent(options)` creates the session once and returns an `AgentHandle`;
 `runAgent` is `startAgent` + one `run` + `dispose`. `StartAgentOptions` is
-`RunAgentOptions` minus `task`, `timeoutMs`, `toolTimeoutMs` and `onUpdate`
-(those belong to `run`); `signal` cancels creation only.
+`RunAgentOptions` minus `task`, `timeoutMs`, `wrapUpMs`, `idleTimeoutMs`,
+`toolTimeoutMs` and `onUpdate` (those belong to `run`, as `TurnOptions`);
+`signal` cancels creation only.
 
 ```ts
 const agent = await startAgent({ parent, cwd, systemPrompt, tools });
@@ -93,11 +97,37 @@ child finishes without a valid call even after one correction prompt (the
 correction turn runs under the same `timeoutMs`). An invalid schema fails the
 run before any session is created.
 
-Timeouts: `timeoutMs` limits the whole run; `toolTimeoutMs` limits each
-tool, counted from the moment the tool actually runs (after permission
-gates). Both pause while a person is asked anything permission-related in
-the parent; `usage.waitedMs` is the total time the run timer was paused
-that way.
+Timeouts:
+
+- `timeoutMs`: wall-clock limit of the whole run, a hard cap on cost. Alone,
+  it stops the run (`timed_out`, `timed out after <n>ms`) the moment it
+  expires, however busy the child is.
+- `wrapUpMs`: grace after `timeoutMs`. Instead of stopping, the runner steers
+  the child with `WRAP_UP_MESSAGE` ("Time limit reached. Do not start new
+  work. Finish or stop the current step, then reply now with your final
+  answer: what you did, what is left, and anything the caller must know.";
+  for a structured run, "... then call submit_result now with what you
+  have.", see `wrapUpMessage(structured)`) and waits `wrapUpMs` more. A
+  generation that ends in time keeps its normal outcome (`completed` with
+  its answer or structured result) and the result carries `wrappedUp: true`;
+  otherwise it ends `timed_out` with `timed out after <n>ms; no final answer
+within the <m>ms wrap-up`. If the steer is refused the run stops at once.
+  The live registry marks such a run `wrappingUp` and the runs view shows
+  `wrapping up`.
+- `idleTimeoutMs`: stops a child that made no progress: `timed_out` with
+  `no activity for <n>ms` when no child event arrived for that long. Any
+  event resets it (streamed tokens included). It does not run while a
+  top-level tool executes (that is `toolTimeoutMs`'s job). An idle child
+  cannot answer, so there is no wrap-up.
+- `toolTimeoutMs`: limits each tool, counted from the moment the tool
+  actually runs (after permission gates).
+
+Recommended: `idleTimeoutMs: 600_000`, `wrapUpMs: 180_000` and a generous
+`timeoutMs` as the cost cap: a working child is never cut off without a
+chance to report, and a stuck one is found in ten minutes. All four pause
+while a person is asked anything permission-related in the parent;
+`usage.waitedMs` is the total time the run timer was paused that way. Both
+backends behave the same.
 
 Guards: an inline extension loaded before every other one refuses a call
 before any permission gate can open a dialog. It enforces the `tools`
@@ -129,8 +159,8 @@ work with both backends.
 Backend: `backend?: 'in-process' | 'process'` (default `'in-process'`).
 `'process'` runs the child as a `pi --mode rpc` subprocess in its own
 process group. A child wedged in a tool that ignores abort is then killed:
-`abort()`, `signal`, `timeoutMs` and `toolTimeoutMs` ask Pi to abort and, if
-the run has not ended after 5 s, SIGKILL the whole group (tool grandchildren
+`abort()`, `signal`, `timeoutMs`, `idleTimeoutMs` and `toolTimeoutMs` ask Pi
+to abort and, if the run has not ended after 5 s, SIGKILL the whole group (tool grandchildren
 included) and end the generation as `cancelled` / `timed_out`. `dispose()`
 closes stdin, then SIGTERM after 2 s, then SIGKILL after another 2 s; the
 group is also killed when the parent exits and when the child dies on its
@@ -215,7 +245,8 @@ on every event, streaming deltas included: throttle renders.
 
 - An orphaned permission prompt (one whose decision event never arrives)
   keeps the run and tool timers paused until the tracker drops it after its
-  30-minute cap. Until then `timeoutMs` and `toolTimeoutMs` do not fire;
+  30-minute cap. Until then `timeoutMs`, `wrapUpMs`, `idleTimeoutMs` and
+  `toolTimeoutMs` do not fire;
   `signal` and `dispose()` still cancel the run at once.
 - `pi-claude-bridge` registers its provider at load only in the first module
   instance per process. Later instances register at `session_start`, after

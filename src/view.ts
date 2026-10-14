@@ -132,6 +132,13 @@ const statusOf = (run: LiveRun, now: number): Status => {
     if (isPossiblyStuck(run, now)) {
       return mark('▲', 'warning', 'possibly stuck');
     }
+    if (run.wrappingUp) {
+      return {
+        glyph: { text: SPINNER[0], color: 'accent', spin: true },
+        text: 'wrapping up',
+        color: 'warning',
+      };
+    }
     return {
       glyph: { text: SPINNER[0], color: 'accent', spin: true },
       text: run.currentTool ? oneLine(run.currentTool) : 'thinking',

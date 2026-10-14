@@ -24,6 +24,8 @@ export interface LiveRun {
   state: LiveState;
   /** A forwarded permission prompt of this child is open. */
   waitingForUser: boolean;
+  /** `timeoutMs` expired and the child was asked to wrap up. */
+  wrappingUp?: boolean;
   /** Latest started, not yet ended top-level tool. */
   currentTool?: string;
   turns: number;
@@ -186,6 +188,8 @@ export interface Tracked {
   /** startAgent handle created, nothing run yet. */
   idle(): void;
   generationStart(): void;
+  /** The generation's time limit expired; the child is wrapping up. */
+  wrappingUp(): void;
   /** Child event from the activity extension (or a fake in tests). */
   activity(event: ChildEvent): void;
   /** The runner's own accounting settles the counters. */
@@ -281,6 +285,7 @@ export const trackRun = (spec: TrackSpec): Tracked => {
       run.generation++;
       run.state = 'running';
       run.currentTool = undefined;
+      run.wrappingUp = undefined;
       run.turns = 0;
       run.toolCalls = 0;
       run.tokens = { input: 0, output: 0 };
@@ -290,6 +295,11 @@ export const trackRun = (spec: TrackSpec): Tracked => {
       run.lastStepAt = undefined;
       run.endedAt = undefined;
       run.error = undefined;
+      notify(store);
+    },
+    wrappingUp() {
+      if (run.state !== 'running' || run.wrappingUp) return;
+      run.wrappingUp = true;
       notify(store);
     },
     activity(event) {
@@ -339,6 +349,7 @@ export const trackRun = (spec: TrackSpec): Tracked => {
       const at = Date.now();
       tools.clear();
       run.currentTool = undefined;
+      run.wrappingUp = undefined;
       run.state = status;
       run.error = error;
       run.endedAt = at;

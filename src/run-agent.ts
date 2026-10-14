@@ -65,6 +65,19 @@ const depthStore = ((globalThis as Record<symbol, unknown>)[DEPTH_KEY] ??=
 
 const RECENT_OUTPUT_CHARS = 200;
 
+export const WRAP_UP_MESSAGE =
+  'Time limit reached. Do not start new work. Finish or stop the current ' +
+  'step, then reply now with your final answer: what you did, what is ' +
+  'left, and anything the caller must know.';
+
+const WRAP_UP_STRUCTURED_MESSAGE =
+  'Time limit reached. Do not start new work. Finish or stop the current ' +
+  'step, then call submit_result now with what you have.';
+
+/** Wrap-up steer text; the structured variant asks for `submit_result`. */
+export const wrapUpMessage = (structured: boolean) =>
+  structured ? WRAP_UP_STRUCTURED_MESSAGE : WRAP_UP_MESSAGE;
+
 let defaultFactory: ChildSessionFactory | undefined;
 let processFactory: ChildSessionFactory | undefined;
 
@@ -79,6 +92,8 @@ const emptyUsage = (durationMs: number): RunUsage => ({
   durationMs,
   waitedMs: 0,
 });
+
+const wrappedUpField = (wrappedUp: boolean) => (wrappedUp ? { wrappedUp } : {});
 
 const messageOf = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
@@ -130,7 +145,11 @@ class StartError extends Error {
 
 interface Limits {
   timeoutMs?: number;
+  wrapUpMs?: number;
+  idleTimeoutMs?: number;
   toolTimeoutMs?: number;
+  /** The run ends with `submit_result`, so the wrap-up asks for it. */
+  structured?: boolean;
   signal?: AbortSignal;
 }
 
@@ -138,7 +157,14 @@ interface Limits {
 // generation (creation included, for runAgent).
 const createControl = (
   events: RunAgentOptions['parent']['events'],
-  { timeoutMs, toolTimeoutMs, signal }: Limits,
+  {
+    timeoutMs,
+    wrapUpMs,
+    idleTimeoutMs,
+    toolTimeoutMs,
+    structured,
+    signal,
+  }: Limits,
 ) => {
   const startedAt = Date.now();
   const elapsed = () => Date.now() - startedAt;
@@ -148,8 +174,13 @@ const createControl = (
 
   const toolTimers = new Map<string, PausableTimer>();
   let runTimer: PausableTimer | undefined;
+  let wrapUpTimer: PausableTimer | undefined;
+  let idleTimer: PausableTimer | undefined;
+  let wrappedUp = false;
   const clearTimers = () => {
     runTimer?.clear();
+    wrapUpTimer?.clear();
+    idleTimer?.clear();
     for (const timer of toolTimers.values()) timer.clear();
     toolTimers.clear();
   };
@@ -172,10 +203,14 @@ const createControl = (
     if (value) {
       waitStart = Date.now();
       runTimer?.pause();
+      wrapUpTimer?.pause();
+      idleTimer?.pause();
       for (const timer of toolTimers.values()) timer.pause();
     } else {
       waitedMs += Date.now() - waitStart;
       runTimer?.resume();
+      wrapUpTimer?.resume();
+      idleTimer?.resume();
       for (const timer of toolTimers.values()) timer.resume();
     }
   };
@@ -183,12 +218,72 @@ const createControl = (
   const stopTracking = tracker.onChange(setWaiting);
   setWaiting(tracker.waiting);
 
-  if (timeoutMs !== undefined) {
-    runTimer = createPausableTimer(timeoutMs, () =>
-      stop('timed_out', `timed out after ${timeoutMs}ms`),
+  // Set by attach: the wrap-up needs a session to steer.
+  let wrapUpHook: (() => void) | undefined;
+  const wrapUpText = wrapUpMessage(structured === true);
+  const wrapUp = (grace: number) => {
+    const target = session;
+    if (!target || finished || reason) return;
+    wrappedUp = true;
+    wrapUpTimer = createPausableTimer(grace, () =>
+      stop(
+        'timed_out',
+        `timed out after ${timeoutMs}ms; no final answer within the ` +
+          `${grace}ms wrap-up`,
+      ),
     );
+    if (waiting) wrapUpTimer.pause();
+    wrapUpHook?.();
+    // The grace is already running; a refused steer ends the run as today.
+    (async () => target.steer(wrapUpText))().catch(() => {
+      wrappedUp = false;
+      stop('timed_out', `timed out after ${timeoutMs}ms`);
+    });
+  };
+
+  if (timeoutMs !== undefined) {
+    runTimer = createPausableTimer(timeoutMs, () => {
+      if (wrapUpMs !== undefined && wrapUpMs > 0 && session) wrapUp(wrapUpMs);
+      else stop('timed_out', `timed out after ${timeoutMs}ms`);
+    });
     if (waiting) runTimer.pause();
   }
+
+  // Idle limit. Activity only records the timer's remaining time; the
+  // timer is re-armed on expiry for what is left, so a stream of events
+  // costs no timer churn. The silence is measured on the timer's own
+  // clock, so paused time (tools, people) does not count.
+  const topTools = new Set<string>();
+  let idleMark = 0;
+  const armIdle = (ms: number, pauses: number) => {
+    idleMark = idleTimeoutMs ?? 0;
+    idleTimer = createPausableTimer(ms, () => {
+      const silent = idleMark;
+      if (silent >= (idleTimeoutMs ?? 0)) {
+        stop('timed_out', `no activity for ${idleTimeoutMs}ms`);
+        return;
+      }
+      armIdle((idleTimeoutMs ?? 0) - silent, 0);
+    });
+    for (let i = 0; i < pauses; i++) idleTimer.pause();
+  };
+  const startIdle = () => {
+    if (!idleTimeoutMs || idleTimeoutMs <= 0 || idleTimer) return;
+    if (finished || reason) return;
+    armIdle(idleTimeoutMs, waiting ? 1 : 0);
+  };
+  const onEvent = (event: ChildEvent) => {
+    if (!idleTimer || finished) return;
+    idleMark = idleTimer.remainingMs;
+    const id = event.toolCallId;
+    if (typeof id !== 'string' || event.parentToolCallId) return;
+    if (event.type === 'tool_execution_start' && !topTools.has(id)) {
+      topTools.add(id);
+      idleTimer.pause();
+    } else if (event.type === 'tool_execution_end' && topTools.delete(id)) {
+      idleTimer.resume();
+    }
+  };
 
   const onToolCall = (call: { toolCallId: string; toolName: string }) => {
     if (finished || reason || toolTimeoutMs === undefined) return;
@@ -212,6 +307,7 @@ const createControl = (
     value: undefined,
     usage: { ...emptyUsage(elapsed()), waitedMs: waited() },
     error,
+    ...wrappedUpField(wrappedUp),
   });
 
   const onAbort = () => stop('cancelled', 'aborted');
@@ -222,6 +318,7 @@ const createControl = (
     elapsed,
     waited,
     stop,
+    onEvent,
     onToolCall,
     onToolEnd,
     outcome,
@@ -231,8 +328,14 @@ const createControl = (
     get finished() {
       return finished;
     },
-    attach(target: ChildSession) {
+    get wrappedUp() {
+      return wrappedUp;
+    },
+    wrapUpText,
+    attach(target: ChildSession, onWrapUp?: () => void) {
       session = target;
+      wrapUpHook = onWrapUp;
+      startIdle();
     },
     stopped: () =>
       outcome(reason?.why ?? 'cancelled', reason?.error ?? 'aborted'),
@@ -260,7 +363,10 @@ const toGenerationFailure = (error: StartError) => ({
 const open = async (
   options: StartAgentOptions,
   deps: { factory?: ChildSessionFactory },
-  creationLimits?: Pick<Limits, 'timeoutMs' | 'toolTimeoutMs'>,
+  creationLimits?: Pick<
+    Limits,
+    'timeoutMs' | 'wrapUpMs' | 'idleTimeoutMs' | 'toolTimeoutMs'
+  >,
 ) => {
   const { signal } = options;
   if (signal?.aborted) {
@@ -322,6 +428,7 @@ const open = async (
   }
   const creation = createControl(options.parent.events, {
     ...creationLimits,
+    structured: structured !== undefined,
     signal,
   });
   let generation: { control: Control; collector?: Collector } | undefined;
@@ -442,8 +549,8 @@ const open = async (
         ? createResultCollector(structured, checker.validate)
         : undefined;
     generation = { control, collector };
-    control.attach(session);
     tracked.generationStart();
+    control.attach(session, () => tracked.wrappingUp());
     const baseline = seen;
     let unsubscribe: (() => void) | undefined;
 
@@ -473,6 +580,7 @@ const open = async (
       let providerError: string | undefined;
       unsubscribe = session.subscribe((event: ChildEvent) => {
         if (control.finished) return;
+        control.onEvent(event);
         if (event.type === 'turn_start') {
           turns++;
           tool = undefined;
@@ -544,6 +652,7 @@ const open = async (
         // Pi writes the file only once the conversation has a message.
         transcriptPath:
           sessionFile && fs.existsSync(sessionFile) ? sessionFile : undefined,
+        ...wrappedUpField(control.wrappedUp),
       });
 
       // Re-read: the prompts above may have set it.
@@ -600,7 +709,12 @@ const open = async (
       seen = session.messages.length;
       try {
         const left = session.clearQueue();
-        dropped.push(...left.steering, ...left.followUp);
+        // The runner's own wrap-up text was not the caller's.
+        dropped.push(
+          ...[...left.steering, ...left.followUp].filter(
+            (text) => text !== control.wrapUpText,
+          ),
+        );
       } catch {
         // The queue is best effort; the outcome stands.
       }
@@ -655,7 +769,10 @@ const open = async (
         turn,
         createControl(options.parent.events, {
           timeoutMs: turn.timeoutMs,
+          wrapUpMs: turn.wrapUpMs,
+          idleTimeoutMs: turn.idleTimeoutMs,
           toolTimeoutMs: turn.toolTimeoutMs,
+          structured: structured !== undefined,
           signal: turn.signal,
         }),
       );
@@ -708,10 +825,23 @@ export const runAgent = async (
   options: RunAgentOptions,
   deps: { factory?: ChildSessionFactory } = {},
 ): Promise<RunAgentResult> => {
-  const { task, timeoutMs, toolTimeoutMs, onUpdate, ...rest } = options;
+  const {
+    task,
+    timeoutMs,
+    wrapUpMs,
+    idleTimeoutMs,
+    toolTimeoutMs,
+    onUpdate,
+    ...rest
+  } = options;
   let opened: Awaited<ReturnType<typeof open>>;
   try {
-    opened = await open(rest, deps, { timeoutMs, toolTimeoutMs });
+    opened = await open(rest, deps, {
+      timeoutMs,
+      wrapUpMs,
+      idleTimeoutMs,
+      toolTimeoutMs,
+    });
   } catch (error) {
     if (error instanceof StartError) return toGenerationFailure(error);
     throw error;

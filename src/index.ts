@@ -1,5 +1,10 @@
 export * from './types.ts';
-export { runAgent, startAgent } from './run-agent.ts';
+export {
+  runAgent,
+  startAgent,
+  WRAP_UP_MESSAGE,
+  wrapUpMessage,
+} from './run-agent.ts';
 export { SUBMIT_RESULT_TOOL } from './structured.ts';
 export {
   createPiSessionFactory,

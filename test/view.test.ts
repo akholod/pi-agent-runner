@@ -150,6 +150,12 @@ test('a running run with no tool reads as thinking; starting and idle', () => {
   assert.match(lines[3], /^○ .* idle /);
 });
 
+test('a wrapping up run shows the status word instead of the tool', () => {
+  const lines = render([run({ currentTool: 'bash', wrappingUp: true })]);
+  assert.match(lines[1], /^⠋ .* wrapping up /);
+  assert.doesNotMatch(lines[1], /bash/);
+});
+
 test('a possibly stuck run is marked in the row and the header', () => {
   const stuck = run({ lastStepAt: NOW - 3 * MIN, startedAt: NOW - 4 * MIN });
   const lines = render([stuck]);
