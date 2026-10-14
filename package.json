@@ -1,7 +1,7 @@
 {
   "name": "pi-agent-runner",
   "version": "0.6.0",
-  "description": "In-process child-agent runner for Pi plugins, built on createAgentSession",
+  "description": "Run child agents from a Pi extension: model, tools, permissions, timeouts and a live view, solved once",
   "keywords": [
     "pi",
     "pi-coding-agent",
