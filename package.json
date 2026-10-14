@@ -1,6 +1,6 @@
 {
   "name": "pi-agent-runner",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Run child agents from a Pi extension: model, tools, permissions, timeouts and a live view, solved once",
   "keywords": [
     "pi",
