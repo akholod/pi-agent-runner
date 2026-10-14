@@ -5,10 +5,10 @@ with its own prompt, tools and model, working next to you in the same Pi
 session.
 
 ```
-agents ─────────────────────────────────────────── 2 running · 1 waiting
-⠋ spiral-executor  ralph US-002  gpt-6-luna  t4  bash             12.3k  0:41
-⏸ spiral-critic    ralplan #2    opus-5      t2  waiting for you         1:05
-✓ scout            opium         gpt-6-luna  t6  done              8.1k  0:22
+agents ─────────────────────────────────────────────── 1 running · 1 waiting
+⠋ spiral-executor  ralph US-002  bash · quiet 0:45  12.3k tok  1:05
+⏸ spiral-critic    ralplan #2    waiting for you     3.9k tok  0:41
+✓ scout            opium         done                   $0.42  0:22
 ```
 
 **Just want this in Pi?** You don't need this library directly. Install one
@@ -69,9 +69,14 @@ npm install pi-agent-runner
 ```ts
 // review.ts
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { mountRunsView, runAgent } from 'pi-agent-runner';
+import {
+  mountRunsView,
+  registerAgentsCommand,
+  runAgent,
+} from 'pi-agent-runner';
 
 export default function (pi: ExtensionAPI) {
+  registerAgentsCommand(pi); // /agents: activity, cancel, take over
   let view: { dispose(): void } | undefined;
   pi.on('session_start', (_event, ctx) => {
     view = mountRunsView(ctx); // the shared agents list
@@ -95,7 +100,9 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-Try it with `pi -e ./review.ts`, then type `/review src/`.
+Try it with `pi -e ./review.ts`, then type `/review src/`. While it runs,
+`/agents` lets you read what the child is doing, cancel it, or take a
+finished one over in your own Pi session.
 
 ## What you get
 
@@ -110,8 +117,11 @@ Try it with `pi -e ./review.ts`, then type `/review src/`.
 - **Structured answers.** Pass a JSON Schema, get validated data back.
 - **Guards.** A tool allowlist, a git guard against destructive commands,
   read roots and a nesting limit, plus your own extensions in every child.
-- **One live list.** Children from every plugin show in the same view; use
-  `liveRuns()` to draw your own.
+- **One live list.** Children from every plugin show in the same view, with
+  the current tool, a quiet timer when a child goes silent, and cost or
+  tokens; use `liveRuns()` to draw your own.
+- **`/agents`.** Pick a running child to read its recent activity or cancel
+  it; continue a finished one with `pi --fork`.
 - **A real kill switch.** `backend: 'process'` runs a child as a separate
   `pi` process that can be killed, along with anything it started.
 

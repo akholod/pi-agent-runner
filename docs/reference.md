@@ -216,7 +216,9 @@ const stop = registry.subscribe(() => render(registry.list())); // every change
 (child sessionId), `parentSessionId`, `name`, `context`, `model`, `state`
 (`starting | running | idle | <RunStatus>`), `waitingForUser`,
 `currentTool`, `turns`, `toolCalls`, `tokens`, `cost`, `generation`,
-`startedAt`, `lastActivityAt`, `lastStepAt`, `endedAt`, `error`. The state
+`startedAt`, `lastActivityAt`, `lastStepAt`, `endedAt`, `error`,
+`transcriptPath` (absolute path of the child's session file; it may not exist
+yet). The state
 is `starting` until the first generation, `running` during one, then the
 generation's terminal status until the next generation (`idle` is a
 `startAgent` handle that has not run yet). Counters belong to the current
@@ -227,6 +229,72 @@ permission prompt of that child is open. `isPossiblyStuck(run, now)` is
 true for a running child that is not waiting for a person and has had no
 turn end or tool end for `STUCK_AFTER_MS` (2 minutes). The listener fires
 on every event, streaming deltas included: throttle renders.
+
+The runs view (`mountRunsView`, or `renderRunsView` for one render) draws one
+row per run: glyph, name (`g2` after it from generation 2), context, model,
+status, usage and elapsed time. Status, usage and the end of the row follow
+these rules:
+
+- A running row shows the current tool (`thinking` when none, `wrapping up`
+  after `timeoutMs`). Once `lastActivityAt` is 30 s old (`QUIET_AFTER_MS`)
+  it adds `· quiet m:ss`.
+- A row turns `▲` (stuck, counted in the header) only when
+  `isPossiblyStuck` holds and the run is also quiet. A child that streams a
+  long answer or tool output is slow, not stuck.
+- Usage is the cost (`$0.42`, `<$0.01`) when the provider reports one above
+  zero, otherwise tokens (`3.9k tok`); subscription providers report no cost.
+- A `failed`, `bad output`, `timed out` or `cancelled` row ends with a
+  one-line reason from `error` when there is room. Reasons that only repeat
+  the status or the clock (`aborted`, `timed out after 10:00`) are left out.
+- Narrow terminals drop the model, then usage, then context.
+
+## The /agents command
+
+Pi widgets take no input, so inspecting and controlling a child lives behind
+a command:
+
+```ts
+import { registerAgentsCommand } from 'pi-agent-runner';
+
+export default function (pi: ExtensionAPI) {
+  registerAgentsCommand(pi, { shortcut: 'ctrl+shift+a' }); // shortcut optional
+}
+```
+
+`registerAgentsCommand(pi, options?)` registers `/agents` and, with
+`options.shortcut` (a Pi key id, none by default), the same picker on that
+key. Call it once at extension load.
+
+`/agents` lists the runs in the live registry, active first and then the
+most recent. In the TUI you pick one and then an action; with no UI
+(print/RPC mode) it notifies the list instead. With no runs it says so.
+
+- **Recent activity**: an overlay with the last 50 events of the run (tool
+  calls with their command or path, tool errors, the child's text, generation
+  start and end). It updates live; `↑` `↓` `PgUp` `PgDn` scroll, `Esc` or
+  `q` closes.
+- **Cancel run** (running runs only): asks for confirmation, then aborts the
+  current generation, as `abort()` does. A `startAgent` handle keeps its
+  session and can `run` again.
+- **Take over** (finished runs whose transcript file exists): notifies the
+  command `pi --fork <transcript>`. Pi writes a new session file and leaves
+  the original alone, so a live handle may keep using it. The fork restores
+  the conversation only: not the child's extensions, tools or frozen system
+  prompt.
+
+One registration across copies: Pi does not dedupe commands, so two
+extensions registering `agents` would end up as `agents:1` and `agents:2`,
+neither answering `/agents`. Copies of this package therefore claim the
+command (and the shortcut) on `globalThis` and only the first registers.
+The owner releases its claim on `session_shutdown`, so `/reload` leaves one
+`/agents`, not none.
+
+Runs tracked by an older copy of the package (before this command) keep no
+activity buffer or control handle: the picker still lists them, but their
+actions show as unavailable.
+
+`AgentsCommandOptions`, `ActivityEntry` (`at`, `kind`: `tool | error | text |
+generation`, `text`) and `RunControl` (`cancel()`) are exported as types.
 
 ## Known limitations
 
