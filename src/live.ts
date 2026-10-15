@@ -28,6 +28,10 @@ export interface LiveRun {
   wrappingUp?: boolean;
   /** Latest started, not yet ended top-level tool. */
   currentTool?: string;
+  /** `currentTool` with its short argument summary, for example `read a.ts`. */
+  currentAction?: string;
+  /** First line of the latest thinking block, when the model exposes it. */
+  lastThought?: string;
   turns: number;
   toolCalls: number;
   /** Current generation; settled by the runner's own accounting at its end. */
@@ -49,7 +53,7 @@ export interface LiveRun {
 /** One line of a run's recent activity. */
 export interface ActivityEntry {
   at: number;
-  kind: 'tool' | 'error' | 'text' | 'generation';
+  kind: 'tool' | 'error' | 'text' | 'thought' | 'generation';
   /** A single line. */
   text: string;
 }
@@ -74,6 +78,7 @@ export const MAX_LIVE_RUNS = 200;
 /** Entries kept per run in the activity buffer. */
 export const MAX_ACTIVITY = 50;
 const TEXT_CHARS = 200;
+const THOUGHT_CHARS = 120;
 const ARG_CHARS = 200;
 const JSON_ARG_CHARS = 80;
 /** A prompt still open after this long is dropped (lost decision event). */
@@ -313,6 +318,38 @@ const assistantText = (message: unknown) => {
   return text.length > TEXT_CHARS ? `…${text.slice(-TEXT_CHARS)}` : text;
 };
 
+// '**Planning the fix**' and '## Plan' read as plain text
+const thoughtLine = (raw: string) => {
+  for (const line of raw.split('\n')) {
+    const plain = flat(
+      line
+        .replace(/^\s*(?:#{1,6}|>|[-*+])\s+/, '')
+        .replace(/(\*\*|__|`)/g, '')
+        .replace(/^[*_]+|[*_]+$/g, ''),
+    );
+    if (plain) return plain;
+  }
+  return '';
+};
+
+// first line of every non-empty thinking block, oldest first; redacted and
+// empty blocks, and providers without thinking, give nothing
+const thoughtsOf = (message: unknown) => {
+  const m = message as { role?: unknown; content?: unknown } | null;
+  if (m?.role !== 'assistant' || !Array.isArray(m.content)) return [];
+  return m.content
+    .map((block) => {
+      const b = block as { type?: unknown; thinking?: unknown } | null;
+      return b?.type === 'thinking' && typeof b.thinking === 'string'
+        ? thoughtLine(b.thinking)
+        : '';
+    })
+    .filter(Boolean);
+};
+
+const clipLine = (text: string, max: number) =>
+  text.length > max ? `${text.slice(0, max - 1)}…` : text;
+
 export const trackRun = (spec: TrackSpec): Tracked => {
   const store = liveStore();
   watchPrompts(store, spec.events);
@@ -345,7 +382,7 @@ export const trackRun = (spec: TrackSpec): Tracked => {
   setWaiting(store, spec.id);
   notify(store);
 
-  const tools = new Map<string, string>();
+  const tools = new Map<string, { name: string; action: string }>();
   const record = (kind: ActivityEntry['kind'], text: string, at: number) => {
     buffer.push({ at, kind, text });
     if (buffer.length > MAX_ACTIVITY) buffer.shift();
@@ -364,7 +401,11 @@ export const trackRun = (spec: TrackSpec): Tracked => {
     };
     run.cost = settled.cost + partial.cost;
   };
-  const latestTool = () => [...tools.values()].at(-1);
+  const showTool = () => {
+    const latest = [...tools.values()].at(-1);
+    run.currentTool = latest?.name;
+    run.currentAction = latest?.action;
+  };
   const totalsOf = (usage: AssistantUsage) => ({
     input: usage.input ?? 0,
     output: usage.output ?? 0,
@@ -390,6 +431,8 @@ export const trackRun = (spec: TrackSpec): Tracked => {
       run.generation++;
       run.state = 'running';
       run.currentTool = undefined;
+      run.currentAction = undefined;
+      run.lastThought = undefined;
       run.wrappingUp = undefined;
       run.turns = 0;
       run.toolCalls = 0;
@@ -420,19 +463,16 @@ export const trackRun = (spec: TrackSpec): Tracked => {
       } else if (type === 'tool_execution_start') {
         if (!event.parentToolCallId && typeof event.toolCallId === 'string') {
           const name = typeof event.toolName === 'string' ? event.toolName : '';
-          tools.set(event.toolCallId, name || 'tool');
           const args = argSummary(name, event.args);
-          record(
-            'tool',
-            args ? `${name || 'tool'} ${args}` : name || 'tool',
-            at,
-          );
+          const action = args ? `${name || 'tool'} ${args}` : name || 'tool';
+          tools.set(event.toolCallId, { name: name || 'tool', action });
+          record('tool', action, at);
           run.toolCalls++;
-          run.currentTool = latestTool();
+          showTool();
         }
       } else if (type === 'tool_execution_end') {
         const id = event.toolCallId;
-        const name = typeof id === 'string' ? tools.get(id) : undefined;
+        const name = typeof id === 'string' ? tools.get(id)?.name : undefined;
         if (typeof id === 'string' && tools.delete(id)) {
           if (event.isError === true) {
             const reason = clipTo(errorText(event.result), TEXT_CHARS);
@@ -442,7 +482,7 @@ export const trackRun = (spec: TrackSpec): Tracked => {
               at,
             );
           }
-          run.currentTool = latestTool();
+          showTool();
           run.lastStepAt = at;
         }
       } else if (type === 'message_update') {
@@ -451,6 +491,8 @@ export const trackRun = (spec: TrackSpec): Tracked => {
           partial = totalsOf(usage);
           showTokens();
         }
+        const thought = thoughtsOf(event.message).at(-1);
+        if (thought) run.lastThought = clipLine(thought, THOUGHT_CHARS);
       } else if (type === 'message_end') {
         const usage = assistantUsage(event.message);
         if (usage) {
@@ -464,6 +506,12 @@ export const trackRun = (spec: TrackSpec): Tracked => {
         partial = zero();
         showTokens();
         const text = assistantText(event.message);
+        const thoughts = thoughtsOf(event.message);
+        for (const thought of thoughts) {
+          record('thought', clipLine(thought, TEXT_CHARS), at);
+        }
+        const last = thoughts.at(-1);
+        if (last) run.lastThought = clipLine(last, THOUGHT_CHARS);
         if (text) record('text', text, at);
       }
       notify(store);
@@ -472,6 +520,7 @@ export const trackRun = (spec: TrackSpec): Tracked => {
       const at = Date.now();
       tools.clear();
       run.currentTool = undefined;
+      run.currentAction = undefined;
       run.wrappingUp = undefined;
       run.state = status;
       run.error = error;

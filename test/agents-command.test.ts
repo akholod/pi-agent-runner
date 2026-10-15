@@ -353,6 +353,17 @@ test('activity buffer: content, formats and the cap', async () => {
     });
     s.spec?.onActivity?.({
       type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '**Checking the grep**\nmore detail' },
+          { type: 'thinking', thinking: '' },
+          { type: 'thinking', thinking: `${'t'.repeat(300)}` },
+        ],
+      },
+    });
+    s.spec?.onActivity?.({
+      type: 'message_end',
       message: { role: 'user', content: [{ type: 'text', text: 'hi' }] },
     });
     s.messages.push({
@@ -371,8 +382,11 @@ test('activity buffer: content, formats and the cap', async () => {
   assert.equal(texts[4], 'error|grep: no such directory');
   assert.match(texts[5], /^text\|…y+ the end$/);
   assert.ok(texts[5].length <= 'text|'.length + 201);
-  assert.equal(texts[6], 'generation|generation 1 completed');
-  assert.equal(texts.length, 7);
+  assert.equal(texts[6], 'thought|Checking the grep');
+  assert.match(texts[7], /^thought\|t+…$/);
+  assert.ok(texts[7].length <= 'thought|'.length + 200);
+  assert.equal(texts[8], 'generation|generation 1 completed');
+  assert.equal(texts.length, 9);
   assert.ok(entries.every((e, i) => i === 0 || e.at >= entries[i - 1].at));
 });
 
@@ -783,4 +797,30 @@ test('Esc closes the overlay too', async () => {
   }) as never;
   await pickAgent(ctx);
   assert.equal(closed, 1);
+});
+
+test('activity view: thoughts are marked and muted', () => {
+  const at = new Date(2026, 0, 2, 3, 4, 5).getTime();
+  const marked: string[] = [];
+  const paint = {
+    fg: (color: string, text: string) => {
+      marked.push(`${color}|${text}`);
+      return text;
+    },
+    bold: (text: string) => text,
+  } as unknown as Theme;
+  const view = renderActivity({
+    run: run('v2', { currentTool: 'bash' }),
+    entries: [
+      { at, kind: 'tool', text: 'bash ls' },
+      { at: at + 1000, kind: 'thought', text: 'Checking the grep' },
+    ],
+    now: at + 2000,
+    width: 60,
+    rows: 5,
+    offset: 0,
+    paint,
+  });
+  assert.ok(view.lines.includes('03:04:06 ~ Checking the grep'));
+  assert.ok(marked.includes('muted|~ Checking the grep'));
 });

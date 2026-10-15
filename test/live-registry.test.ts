@@ -501,3 +501,120 @@ test('revive leaves a matching model alone', async () => {
   );
   assert.deepEqual(calls, []);
 });
+
+const thinkingMessage = (...blocks: string[]) => ({
+  role: 'assistant',
+  content: blocks.map((thinking) => ({ type: 'thinking', thinking })),
+});
+
+test('current action carries the short argument summary', async () => {
+  const id = sessionId();
+  const snaps: Array<LiveRun | undefined> = [];
+  const factory = factoryOf(async () =>
+    sessionWith(id, async (s) => {
+      const snap = () => snaps.push(find(id));
+      emitActivity(s, {
+        type: 'tool_execution_start',
+        toolCallId: 'a',
+        toolName: 'read',
+        args: { path: 'src/feed/parser.ts' },
+      });
+      snap();
+      emitActivity(s, {
+        type: 'tool_execution_start',
+        toolCallId: 'b',
+        toolName: 'bash',
+        args: { command: 'npm test' },
+      });
+      snap();
+      emitActivity(s, {
+        type: 'tool_execution_start',
+        toolCallId: 'n',
+        parentToolCallId: 'b',
+        toolName: 'inner',
+        args: { path: 'x' },
+      });
+      snap();
+      emitActivity(s, { type: 'tool_execution_end', toolCallId: 'b' });
+      snap();
+      emitActivity(s, { type: 'tool_execution_end', toolCallId: 'a' });
+      snap();
+      s.messages.push(assistant('hi'));
+    }),
+  );
+  await runAgent(
+    { parent: fakeParent(), cwd: '/tmp', systemPrompt: 's', task: 't' },
+    { factory },
+  );
+  assert.deepEqual(
+    snaps.map((r) => r?.currentAction),
+    [
+      'read src/feed/parser.ts',
+      'bash npm test',
+      'bash npm test',
+      'read src/feed/parser.ts',
+      undefined,
+    ],
+  );
+  assert.equal(snaps[1]?.currentTool, 'bash');
+});
+
+test('last thought: first line of the latest thinking block', async () => {
+  const id = sessionId();
+  const snaps: Array<LiveRun | undefined> = [];
+  const factory = factoryOf(async () =>
+    sessionWith(id, async (s) => {
+      const snap = () => snaps.push(find(id));
+      emitActivity(s, {
+        type: 'message_update',
+        message: thinkingMessage('**Planning the fix**\n\nLook at parser.'),
+      });
+      snap();
+      emitActivity(s, {
+        type: 'message_update',
+        message: thinkingMessage('first', '', '## Next   step\nmore'),
+      });
+      snap();
+      emitActivity(s, {
+        type: 'message_end',
+        message: thinkingMessage('first', '\n\n', `${'w '.repeat(100)}`),
+      });
+      snap();
+      emitActivity(s, {
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'thinking', thinking: '', redacted: true }],
+        },
+      });
+      snap();
+      s.messages.push(assistant('hi'));
+    }),
+  );
+  await runAgent(
+    { parent: fakeParent(), cwd: '/tmp', systemPrompt: 's', task: 't' },
+    { factory },
+  );
+  assert.equal(snaps[0]?.lastThought, 'Planning the fix');
+  assert.equal(snaps[1]?.lastThought, 'Next step');
+  assert.equal(snaps[2]?.lastThought?.length, 120);
+  assert.ok(snaps[2]?.lastThought?.endsWith('…'));
+  assert.equal(snaps[3]?.lastThought, snaps[2]?.lastThought, 'empty is kept');
+});
+
+test('no thinking blocks: no thought and no thought entries', async () => {
+  const id = sessionId();
+  const factory = factoryOf(async () =>
+    sessionWith(id, async (s) => {
+      emitActivity(s, { type: 'message_update', message: assistant('hm') });
+      emitActivity(s, { type: 'message_end', message: assistant('hm') });
+      s.messages.push(assistant('hm'));
+    }),
+  );
+  await runAgent(
+    { parent: fakeParent(), cwd: '/tmp', systemPrompt: 's', task: 't' },
+    { factory },
+  );
+  assert.equal(find(id)?.lastThought, undefined);
+  assert.ok(!(runActivity(id) ?? []).some((e) => e.kind === 'thought'));
+});

@@ -130,6 +130,7 @@ const KINDS: Record<
   tool: { mark: '▸', color: 'text' },
   error: { mark: '✗', color: 'error' },
   text: { mark: '“', color: 'muted' },
+  thought: { mark: '~', color: 'muted' },
   generation: { mark: '●', color: 'dim' },
 };
 

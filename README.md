@@ -118,8 +118,9 @@ finished one over in your own Pi session.
 - **Guards.** A tool allowlist, a git guard against destructive commands,
   read roots and a nesting limit, plus your own extensions in every child.
 - **One live list.** Children from every plugin show in the same view, with
-  the current tool, a quiet timer when a child goes silent, and cost or
-  tokens; use `liveRuns()` to draw your own.
+  the current tool call (`read src/a.ts`), the latest thought when the
+  model exposes thinking, a quiet timer when a child goes silent, and cost
+  or tokens; use `liveRuns()` to draw your own.
 - **`/agents`.** Pick a running child to read its recent activity or cancel
   it; continue a finished one with `pi --fork`.
 - **A real kill switch.** `backend: 'process'` runs a child as a separate

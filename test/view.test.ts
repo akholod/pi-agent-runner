@@ -228,10 +228,16 @@ test('a wrapping up run keeps the quiet time and the stuck mark', () => {
 });
 
 test('a clipped status keeps its quiet time', () => {
-  const lines = render([
-    run({ currentTool: 'mcp__custom-tools__bash', lastActivityAt: NOW - MIN }),
-  ]);
-  assert.match(lines[1], / mcp__custom-… · quiet 1:00 /);
+  const lines = render(
+    [
+      run({
+        currentTool: 'mcp__custom-tools__bash',
+        lastActivityAt: NOW - MIN,
+      }),
+    ],
+    70,
+  );
+  assert.match(lines[1], / mcp__custom-tools… · quiet 1:00 /);
 });
 
 test('failure reasons trail the row, one line, clipped', () => {
@@ -709,4 +715,84 @@ test('dispose clears the widget, every timer and the subscription', () => {
   // the next mount in the process starts fresh
   mount(ctx, c.options(reg));
   assert.equal(typeof ctx.widget, 'function');
+});
+
+test('the row shows the tool action with its arguments', () => {
+  const lines = render([
+    run({ currentTool: 'read', currentAction: 'read src/feed/parser.ts' }),
+  ]);
+  assert.match(lines[1], / read src\/feed\/parser\.ts /);
+});
+
+test('row priority: wrapping up, action, last thought, thinking', () => {
+  const thought = 'Planning the fix';
+  const row = (over: Partial<LiveRun>) => render([run(over)])[1];
+  const base = { currentTool: undefined, lastThought: thought };
+  assert.match(row(base), /^⠋ .* Planning the fix /);
+  assert.match(
+    row({ ...base, currentTool: 'bash', currentAction: 'bash npm test' }),
+    / bash npm test /,
+  );
+  assert.doesNotMatch(
+    row({ ...base, currentTool: 'bash', currentAction: 'bash npm test' }),
+    /Planning/,
+  );
+  const wrapping = row({ ...base, currentTool: 'bash', wrappingUp: true });
+  assert.match(wrapping, / wrapping up /);
+  assert.doesNotMatch(wrapping, /Planning|bash/);
+  assert.match(row({ currentTool: undefined }), / thinking /);
+});
+
+test('a long thought is clipped to the row width', () => {
+  const lines = render(
+    [run({ currentTool: undefined, lastThought: 'word '.repeat(40).trim() })],
+    80,
+  );
+  assert.ok(lines.every((line) => visibleWidth(line) <= 80));
+  assert.match(lines[1], /word/);
+});
+
+test('a wide terminal gives the doing text the room left', () => {
+  const thought = 'With all claims checked, I can write the final verdict now';
+  const action = 'grep "No JS files found in .omc/plans and nothing else"';
+  const rows = [
+    run({ id: 'a', currentTool: undefined, lastThought: thought }),
+    run({ id: 'b', currentTool: 'grep', currentAction: action }),
+    done({ id: 'c' }),
+  ];
+  const wide = render(rows, 200);
+  assert.match(wide[1], new RegExp(` ${thought} `));
+  assert.match(wide[2], new RegExp(` ${action.replace(/[".]/g, '\\$&')} `));
+  assert.ok(wide.every((line) => visibleWidth(line) <= 200));
+  // columns stay aligned across rows
+  const at = (line: string): number => line.indexOf('0:4');
+  assert.equal(at(wide[1]), at(wide[2]));
+  const narrow = render(rows, 100);
+  assert.doesNotMatch(narrow[1], /final verdict/);
+  assert.match(narrow[1], /… /);
+  assert.ok(narrow.every((line) => visibleWidth(line) <= 100));
+});
+
+test('a thought uses at most its stored 120 characters', () => {
+  const thought = `${'w'.repeat(119)}…`;
+  const lines = render(
+    [run({ currentTool: undefined, lastThought: thought })],
+    300,
+  );
+  assert.ok(lines[1].includes(thought));
+});
+
+test('a failure note still fits beside a long thought', () => {
+  const lines = render(
+    [
+      run({
+        id: 'a',
+        currentTool: undefined,
+        lastThought: 'x'.repeat(100),
+      }),
+      done({ id: 'b', state: 'failed', error: 'rate limit exceeded' }),
+    ],
+    140,
+  );
+  assert.match(lines[2], /rate limit exceeded/);
 });

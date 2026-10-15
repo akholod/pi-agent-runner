@@ -175,7 +175,10 @@ const reasonOf = (run: LiveRun, label: string): string => {
 
 const doingOf = (run: LiveRun): Tail => {
   if (run.wrappingUp) return { text: 'wrapping up', color: 'warning' };
-  if (run.currentTool) return { text: oneLine(run.currentTool), color: 'text' };
+  const action = run.currentAction ?? run.currentTool;
+  if (action) return { text: oneLine(action), color: 'text' };
+  const thought = run.lastThought;
+  if (thought) return { text: oneLine(thought), color: 'muted' };
   return { text: 'thinking', color: 'muted' };
 };
 
@@ -337,6 +340,19 @@ const fitColumns = (rows: Row[], budget: number): Placed[] => {
     if (over <= 0) break;
     if (keys.includes(key) && width[key] > MIN_CELL) {
       width[key] = Math.max(MIN_CELL, width[key] - over);
+    }
+  }
+  // the status takes the room a wide terminal leaves, up to what the
+  // longest row needs; a failure note keeps its own room
+  if (keys.includes('status')) {
+    const note = Math.min(NOTE_MAX, naturalWidth(rows, 'note'));
+    const reserve = note > 0 ? note + GAP : 0;
+    const spare = budget - total() - reserve;
+    if (spare > 0) {
+      width.status = Math.min(
+        naturalWidth(rows, 'status'),
+        width.status + spare,
+      );
     }
   }
   const placed = COLUMNS.filter((col) => keys.includes(col.key)).map((col) => ({
