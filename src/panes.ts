@@ -19,6 +19,7 @@ import {
 import {
   DEFAULT_LINGER_MS,
   createFeed,
+  paneTitle,
   defaultFeedDir,
   type Feed,
 } from './pane-feed.ts';
@@ -123,6 +124,8 @@ interface OpenSpec {
   cwd: string;
   /** argv of the viewer. */
   command: string[];
+  /** What the pane is called: `name · context`. */
+  title: string;
 }
 
 interface Backend {
@@ -157,6 +160,12 @@ const herdrBackend: Backend = {
       await exec('herdr', ['pane', 'close', paneId]).catch(() => undefined);
       throw error;
     }
+    // herdr shows the label, not the command; a missing label is no failure
+    if (spec.title) {
+      await exec('herdr', ['pane', 'rename', paneId, spec.title]).catch(
+        () => undefined,
+      );
+    }
     return paneId;
   },
   closeArgs: (paneId) => ['herdr', ['pane', 'close', paneId]],
@@ -180,6 +189,11 @@ const tmuxBackend = (env: NodeJS.ProcessEnv): Backend => ({
     ]);
     const paneId = out.trim();
     if (!paneId) throw new Error('tmux: no pane id');
+    if (spec.title) {
+      await exec('tmux', ['select-pane', '-t', paneId, '-T', spec.title]).catch(
+        () => undefined,
+      );
+    }
     return paneId;
   },
   closeArgs: (paneId) => ['tmux', ['kill-pane', '-t', paneId]],
@@ -425,6 +439,7 @@ const startPanes = (
             direction: target ? 'down' : 'right',
             cwd,
             command,
+            title: paneTitle(pane.last),
           });
           break;
         } catch (error) {

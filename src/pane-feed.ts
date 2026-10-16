@@ -6,6 +6,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ActivityEntry, LiveState } from './live.ts';
+import { oneLine } from './view.ts';
 
 export type FeedRecord =
   | {
@@ -44,6 +45,19 @@ export type FeedRecord =
     };
 
 export const DEFAULT_LINGER_MS = 5000;
+
+/** `name · context`, one clean line; what the pane is called. */
+export const paneTitle = (start: {
+  name: string;
+  context?: string;
+  generation?: number;
+}): string => {
+  const gen = (start.generation ?? 1) > 1 ? ` g${start.generation}` : '';
+  return [oneLine(start.name) + gen, oneLine(start.context ?? '')]
+    .filter(Boolean)
+    .join(' · ')
+    .replace(/\p{Cc}/gu, '');
+};
 
 const uidOf = (): string => String(process.getuid?.() ?? 'user');
 

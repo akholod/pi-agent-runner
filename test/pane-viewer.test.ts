@@ -240,3 +240,146 @@ test('headerLines and endLines are plain text without a paint', () => {
     ['✗ failed · 1:02 · 4 turns · 12.3k tok', '  boom bang'],
   );
 });
+
+const ESC = String.fromCharCode(27);
+const BEL = String.fromCharCode(7);
+const SGR = new RegExp(`${ESC}\\[[0-9;]*m`, 'g');
+const SEQUENCES = new RegExp(
+  `${ESC}\\](?:[^${BEL}]*)${BEL}|${ESC}\\[([?0-9;]*)([A-Za-z])|${ESC}([78])` +
+    `|\\n|[^${ESC}\\n]+`,
+  'g',
+);
+
+// A tiny terminal: just the sequences the viewer uses.
+const terminal = (columns: number, rows: number) => {
+  const term = {
+    columns,
+    rows,
+    isTTY: true,
+    title: '',
+    screen: [] as string[],
+    top: 1,
+    bottom: rows,
+    row: 1,
+    saved: 1,
+    listeners: [] as Array<() => void>,
+    on(_event: 'resize', listener: () => void) {
+      term.listeners.push(listener);
+    },
+    resize(c: number, r: number) {
+      term.columns = c;
+      term.rows = r;
+      // a real terminal keeps its content but re-wraps it badly; clear it
+      term.screen = Array.from({ length: r }, () => '');
+      term.top = 1;
+      term.bottom = r;
+      for (const listener of term.listeners) listener();
+    },
+    lines: () => term.screen.map((l) => l.replace(SGR, '')),
+    write(text: string) {
+      const re = SEQUENCES;
+      for (const m of text.matchAll(re)) {
+        const [token, args, cmd, esc] = m;
+        if (token.startsWith('\x1b]')) {
+          term.title = token.slice(4, -1);
+        } else if (cmd === 'H') {
+          term.row = Number(args.split(';')[0] || 1);
+        } else if (cmd === 'K') {
+          term.screen[term.row - 1] = '';
+        } else if (cmd === 'J') {
+          term.screen = Array.from({ length: term.rows }, () => '');
+        } else if (cmd === 'r') {
+          const [t, b] = args ? args.split(';').map(Number) : [1, term.rows];
+          term.top = t;
+          term.bottom = b;
+        } else if (esc === '7') {
+          term.saved = term.row;
+        } else if (esc === '8') {
+          term.row = term.saved;
+        } else if (token === '\n') {
+          if (term.row === term.bottom) {
+            term.screen.splice(term.top - 1, 1);
+            term.screen.splice(term.bottom - 1, 0, '');
+          } else {
+            term.row += 1;
+          }
+        } else if (!cmd && !esc) {
+          term.screen[term.row - 1] = (term.screen[term.row - 1] ?? '') + token;
+        }
+      }
+    },
+  };
+  term.screen = Array.from({ length: rows }, () => '');
+  return term;
+};
+
+const nextTick = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+test('a resize repaints the header, the body tail and the footer', async () => {
+  const term = terminal(60, 12);
+  const tools: FeedRecord[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(
+    (n) => ({ t: 'entry', at: n, kind: 'tool', text: `bash step ${n}` }),
+  );
+  append(START, ...tools);
+  const done = runViewer({
+    feed,
+    out: term,
+    lingerMs: 400,
+    pollMs: 5,
+    now: () => 6000,
+  });
+  await nextTick(40);
+  assert.equal(term.title, 'explorer · ralph US-002');
+  assert.match(term.lines()[0], /^explorer · ralph US-002 · opus-5-5/);
+  assert.match(term.lines()[10], /bash step 12$/);
+
+  // pane gets shorter and narrower, as when another pane is split off
+  term.resize(40, 8);
+  let lines = term.lines();
+  assert.match(lines[0], /^explorer · ralph US-002/);
+  assert.match(lines[1], /^─+$/);
+  assert.match(lines[6], /bash step 12$/);
+  assert.match(lines[5], /bash step 11$/);
+  assert.match(lines[7], /^\S starting · 0:05/);
+
+  // new events still scroll under the header after the repaint
+  append({ t: 'entry', at: 13, kind: 'text', text: 'after resize' });
+  await nextTick(40);
+  lines = term.lines();
+  assert.match(lines[6], /after resize$/);
+  assert.match(lines[5], /bash step 12$/);
+
+  // a resize after the end keeps the final status on screen
+  append(END);
+  await nextTick(40);
+  term.resize(50, 10);
+  lines = term.lines();
+  assert.match(lines[0], /^explorer/);
+  assert.ok(lines.some((l) => /✓ completed · 1:02 · 4 turns/.test(l)));
+  assert.match(lines[9], /^✓ completed · 1:02/);
+  assert.ok(lines.filter((l) => l.startsWith('explorer')).length === 1);
+  await done;
+});
+
+test('a long entry is wrapped anew to the new width', async () => {
+  const term = terminal(60, 12);
+  append(START, {
+    t: 'entry',
+    at: 1,
+    kind: 'text',
+    text: 'one two three four five six seven eight nine ten eleven twelve',
+  });
+  const done = runViewer({ feed, out: term, lingerMs: 100, pollMs: 5 });
+  await nextTick(40);
+  const wide = term.lines().filter((l) => /one two|twelve/.test(l));
+  assert.equal(wide.length, 2);
+  term.resize(30, 12);
+  const narrow = term.lines().filter((l) => /one|four|ten|twelve|six/.test(l));
+  assert.ok(narrow.length >= 3);
+  assert.ok(narrow.every((l) => l.length <= 30));
+  append(END);
+  await done;
+});

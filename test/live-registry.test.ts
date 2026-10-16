@@ -427,6 +427,7 @@ test('the buffer is capped and only a running generation fills it', () => {
 test('a store from an older copy gets the new fields', () => {
   const key = Symbol.for('pi-agent-runner:live:v1');
   const holder = globalThis as Record<symbol, Record<string, unknown>>;
+  liveStore(); // the store exists even when this test runs first
   const current = holder[key];
   const { activity, controls } = current;
   delete current.activity;

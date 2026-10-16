@@ -274,6 +274,7 @@ test('herdr: a running child opens a pane with the viewer', async () => {
       'w1:p2',
       `exec '/usr/bin/node' '/pkg/dist/pane-viewer.js' '${feed}' '${LINGER}'`,
     ],
+    ['herdr', 'pane', 'rename', 'w1:p2', 'explorer · opium'],
   ]);
   const [start] = records('a-g1.jsonl');
   assert.equal(start.t, 'start');
@@ -316,6 +317,7 @@ test('tmux: first pane right of the user pane, then down', async () => {
       '%0',
       viewer(feedA),
     ],
+    ['tmux', 'select-pane', '-t', '%1', '-T', 'explorer · opium'],
     [
       'tmux',
       'split-window',
@@ -330,6 +332,7 @@ test('tmux: first pane right of the user pane, then down', async () => {
       '%1',
       viewer(path.join(dir, 'feeds', 'b-g1.jsonl')),
     ],
+    ['tmux', 'select-pane', '-t', '%3', '-T', 'explorer · opium'],
   ]);
 });
 
@@ -342,7 +345,7 @@ test('herdr: first pane right, later ones down', async () => {
   assert.deepEqual(dirs, [
     ['--current', '--direction', 'right'],
     ['--pane', 'w1:p2', '--direction'],
-    ['--pane', 'w1:p4', '--direction'],
+    ['--pane', 'w1:p5', '--direction'],
   ]);
   assert.deepEqual(
     splits(t.fake.calls).map((c) => c[c.indexOf('--direction') + 1]),
@@ -621,7 +624,7 @@ test('dispose kills every open pane and removes the feeds', async () => {
   const closes = t.fake.calls.filter((c) => c[2] === 'close');
   assert.deepEqual(
     closes.map((c) => c[3]),
-    ['w1:p2', 'w1:p4'],
+    ['w1:p2', 'w1:p5'],
   );
   assert.deepEqual(feedFiles(), []);
   // nothing opens afterwards
@@ -714,4 +717,29 @@ test('a throwing filter or notify never breaks the registry', async () => {
   assert.doesNotThrow(() => t.reg.set([run('a')]));
   await settle();
   assert.deepEqual(t.fake.calls, []);
+});
+
+test('the title joins name, generation and context', async () => {
+  const t = setup();
+  t.fake.failWhen = (call) => call[2] === 'rename';
+  t.mount();
+  t.reg.set([run('a', { name: 'fixer', context: 'opium\nx', generation: 2 })]);
+  await settle();
+  assert.deepEqual(t.fake.calls.at(-1), [
+    'herdr',
+    'pane',
+    'rename',
+    'w1:p2',
+    'fixer g2 · opium x',
+  ]);
+  assert.deepEqual(t.notes, []);
+  assert.deepEqual(feedFiles(), ['a-g2.jsonl']);
+});
+
+test('a run without a context is titled by its name', async () => {
+  const t = setup();
+  t.mount();
+  t.reg.set([run('a', { name: 'fixer', context: undefined })]);
+  await settle();
+  assert.deepEqual(t.fake.calls.at(-1)?.slice(2), ['rename', 'w1:p2', 'fixer']);
 });

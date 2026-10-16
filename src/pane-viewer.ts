@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import type { ThemeColor } from '@earendil-works/pi-coding-agent';
 import { truncateToWidth } from '@earendil-works/pi-tui';
 import { entryLines } from './agents-command.ts';
-import { DEFAULT_LINGER_MS, type FeedRecord } from './pane-feed.ts';
+import { DEFAULT_LINGER_MS, paneTitle, type FeedRecord } from './pane-feed.ts';
 import {
   SPINNER,
   formatCost,
@@ -26,6 +26,8 @@ export const POLL_MS = 100;
 // pane that outlived its run
 const FEED_WAIT_MS = 5000;
 const HEADER_ROWS = 2;
+// printed lines kept for a repaint after a resize
+const MAX_HISTORY = 500;
 const FOOTER_ROWS = 1;
 
 const CODES: Partial<Record<ThemeColor, string>> = {
@@ -214,19 +216,41 @@ export const runViewer = (options: ViewerOptions): Promise<void> => {
     write(`\x1b7\x1b[${rows()};1H\x1b[2K${line}\x1b8`);
   };
 
-  const setupScreen = (): void => {
+  // What was printed, as functions of the width: a resize wraps it anew.
+  // The pane shows only the tail that fits, so the buffer is bounded.
+  const history: Array<(width: number) => string[]> = [];
+  const remember = (render: (width: number) => string[]): void => {
+    history.push(render);
+    if (history.length > MAX_HISTORY) history.shift();
+  };
+
+  // header, scroll region, body tail (bottom-aligned, as live output
+  // leaves it) and footer, all with absolute positions
+  const paint = (): void => {
     if (!tty || !start) return;
-    const head = headerLines(start, width(), p);
+    const w = width();
+    const room = Math.max(0, bottom() - HEADER_ROWS);
+    const body = history.flatMap((render) => render(w)).slice(-room);
+    const first = bottom() - body.length + 1;
+    const at = (row: number, text: string): string =>
+      `\x1b[${row};1H\x1b[2K${text}`;
+    const head = headerLines(start, w, p);
+    const header = head.map((l, i) => at(i + 1, l)).join('');
+    const rowsOut = body.map((l, i) => at(first + i, l)).join('');
+    const region = `\x1b[${HEADER_ROWS + 1};${bottom()}r`;
     write(
-      `\x1b[?25l\x1b[2J\x1b[1;1H${head.join('\n')}` +
-        `\x1b[${HEADER_ROWS + 1};${bottom()}r`,
+      ['\x1b[?25l\x1b[r\x1b[2J', header, region, rowsOut]
+        .concat(`\x1b[${bottom()};1H`)
+        .join(''),
     );
     footer();
   };
 
   // lines appear at the bottom of the scroll region and push the rest up
-  const emit = (lines: string[]): void => {
+  const emit = (render: (width: number) => string[]): void => {
+    const lines = render(width());
     if (lines.length === 0) return;
+    remember(render);
     if (!tty) {
       write(`${lines.join('\n')}\n`);
       return;
@@ -235,19 +259,27 @@ export const runViewer = (options: ViewerOptions): Promise<void> => {
     footer();
   };
 
+  // herdr and tmux show the terminal title as the pane's name
+  const setTitle = (record: Start): void => {
+    if (!tty) return;
+    const title = paneTitle(record);
+    if (title) write(`\x1b]0;${title}\x07`);
+  };
+
   const handle = (record: FeedRecord): void => {
     if (record.t === 'start') {
       start = record;
-      if (tty) setupScreen();
-      else emit(headerLines(record, width(), p));
+      if (tty) paint();
+      else write(`${headerLines(record, width(), p).join('\n')}\n`);
+      setTitle(record);
     } else if (record.t === 'entry') {
-      emit(entryLines(record, width(), p));
+      emit((w) => entryLines(record, w, p));
     } else if (record.t === 'state') {
       state = record;
       footer();
     } else if (record.t === 'end') {
       end = record;
-      emit(endLines(record, width(), p));
+      emit((w) => endLines(record, w, p));
     }
   };
 
@@ -295,10 +327,12 @@ export const runViewer = (options: ViewerOptions): Promise<void> => {
       end?: ReturnType<typeof setTimeout>;
     } = {};
     let lastFooter = 0;
+    let closed = false;
 
     const finish = (): void => {
       clearInterval(timers.poll);
       clearTimeout(timers.end);
+      closed = true;
       if (tty) write(`\x1b[r\x1b[${rows()};1H\x1b[2K\x1b[?25h\n`);
       resolve();
     };
@@ -307,7 +341,7 @@ export const runViewer = (options: ViewerOptions): Promise<void> => {
     const wind = (lines: string[]): void => {
       if (finishing) return;
       finishing = true;
-      emit(lines);
+      emit(() => lines);
       timers.end = setTimeout(finish, lingerMs);
     };
 
@@ -333,8 +367,9 @@ export const runViewer = (options: ViewerOptions): Promise<void> => {
       }
     };
 
+    // also while lingering: the final status must survive a resize
     out.on?.('resize', () => {
-      if (tty && !finishing) setupScreen();
+      if (tty && !closed) paint();
     });
     timers.poll = setInterval(tick, poll);
     tick();
