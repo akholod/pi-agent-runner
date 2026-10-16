@@ -139,7 +139,7 @@ const INDENT = 11;
 // the title, two rules and the key hint
 const CHROME = 4;
 
-const entryLines = (entry: ActivityEntry, width: number, p: Paint) => {
+export const entryLines = (entry: ActivityEntry, width: number, p: Paint) => {
   const { mark, color } = KINDS[entry.kind];
   const room = Math.max(1, width - INDENT);
   return wrapTextWithAnsi(entry.text, room).map((line, index) =>

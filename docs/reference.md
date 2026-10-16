@@ -295,6 +295,70 @@ these rules:
   the status or the clock (`aborted`, `timed out after 10:00`) are left out.
 - Narrow terminals drop the model, then usage, then context.
 
+## Live panes in herdr and tmux
+
+```ts
+import { mountPanes } from 'pi-agent-runner';
+
+const panes = mountPanes(ctx, { max: 3, lingerMs: 5000 }); // ctx: extension context
+// on session_shutdown:
+panes.dispose();
+```
+
+`mountPanes(ctx, options?)` opens a read-only pane for each child that starts
+running and closes it after the run ends. The pane shows a header (name,
+context, model), then one line per event: tool calls with their command or
+path, thinking lines, the child's text, tool errors and generation start and
+end. A footer line keeps the state, turn, tool count, cost or tokens and the
+clock. At the end it prints the final status (and the failure reason), waits
+`lingerMs` and exits. The pane never reads the keyboard and never writes to
+the session.
+
+It does nothing unless `ctx.hasUI && ctx.mode === 'tui'` and a multiplexer is
+found. It returns `{ dispose() }`; call `dispose` on `session_shutdown`.
+
+Options:
+
+- `multiplexer`: `'auto'` (default), `'herdr'` or `'tmux'`. `auto` picks herdr
+  when `HERDR_ENV=1` and `herdr` is on the PATH, else tmux when `TMUX` is set
+  and `tmux` is on the PATH. A named one needs its own environment.
+- `max`: most panes at once, lingering ones included (default 3). A run that
+  starts while all are taken gets no pane and is not queued; it stays in the
+  widget and `/agents`.
+- `lingerMs`: how long a finished pane stays open (default 5000). The runner
+  closes a pane that has not exited a second after that.
+- `filter(run)`: which runs get a pane (default: every run). It is asked once
+  per run generation, when the run starts.
+- Test seams: `registry`, `now`, `setTimer`, `clearTimer`, `exec`, `execSync`,
+  `env`, `hasBinary`, `activity`, `feedDir`, `viewer`, `node`.
+
+Layout. The first pane splits the pane you are in to the right; later ones
+split the newest viewer pane down, so the viewers stack in one column and your
+pane does not get narrower each time. Focus stays on your pane, and the
+working directory is `ctx.cwd` (`process.cwd()` without it). The commands:
+
+- herdr: `herdr pane split --current|--pane <viewer> --direction right|down
+--cwd <dir> --no-focus` (JSON `.result.pane.pane_id`), then `herdr pane run
+<id> "exec node <dist>/pane-viewer.js <feed> <lingerMs>"` (`exec`, so the
+  pane closes with the viewer), and `herdr pane close <id>`.
+- tmux: `tmux split-window -d -h|-v -P -F '#{pane_id}' -c <dir> -t <pane>
+'<node> <dist>/pane-viewer.js <feed> <lingerMs>'` (the pane closes when the
+  command exits), and `tmux kill-pane -t <id>`.
+
+The feed. The child runs inside your Pi process, so the pane cannot read its
+memory. While a pane is attached the runner appends JSON lines (start, activity
+entries, state, end) to `<tmpdir>/pi-agent-runner-<uid>/feeds/<id>-g<n>.jsonl`
+(directory 0700, file 0600; a directory that is a link or someone else's is
+refused). The file is deleted when the pane closes, when you call `dispose`
+and at process exit. The viewer also leaves if the Pi process dies.
+
+One owner per process, like `mountRunsView`: when Opium and Spiral both mount,
+only the first opens panes; when it disposes, its panes close and the most
+recent remaining mount takes over. If a multiplexer command fails, you get one
+warning through `ctx.ui.notify` and no more panes open for that mount (open
+panes close as usual). A `startAgent` handle that runs again gets a new pane
+for the new generation.
+
 ## The /agents command
 
 Pi widgets take no input, so inspecting and controlling a child lives behind

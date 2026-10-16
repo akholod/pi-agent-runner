@@ -43,3 +43,6 @@ export type { MountOptions, RunsView } from './view.ts';
 // in other extensions share one registration.
 export { registerAgentsCommand } from './agents-command.ts';
 export type { AgentsCommandOptions } from './agents-command.ts';
+// Live, read-only panes for running children inside herdr or tmux.
+export { mountPanes } from './panes.ts';
+export type { Multiplexer, PanesHandle, PanesOptions } from './panes.ts';

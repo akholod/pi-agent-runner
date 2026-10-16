@@ -121,6 +121,8 @@ finished one over in your own Pi session.
   the current tool call (`read src/a.ts`), the latest thought when the
   model exposes thinking, a quiet timer when a child goes silent, and cost
   or tokens; use `liveRuns()` to draw your own.
+- **Watch agents live.** Inside herdr or tmux, each running child opens a
+  read-only pane that closes when it's done (`mountPanes`).
 - **`/agents`.** Pick a running child to read its recent activity or cancel
   it; continue a finished one with `pi --fork`.
 - **A real kill switch.** `backend: 'process'` runs a child as a separate
