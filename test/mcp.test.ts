@@ -394,6 +394,25 @@ test('process: the MCP extension is loaded after the installed ones', () => {
   );
 });
 
+test('process: builtin codemode is loaded only when the tools list it', () => {
+  const withTools = (allowedTools: string[] | undefined) =>
+    spec({ guard: { allowedTools, git: true, cwd: '/tmp' } });
+  const base = (tools: string[] | undefined) =>
+    processExtensionPaths(withTools(tools), ['/p.ts'], ['a']).map((p) =>
+      p.startsWith('builtin:') ? p : path.basename(p).replace(/\.[tj]s$/, ''),
+    );
+  assert.deepEqual(base(['read', 'codemode']), [
+    'child-extension',
+    'p',
+    'builtin:codemode',
+    'child-mcp',
+    'child-extension-tail',
+  ]);
+  for (const tools of [['read'], [], undefined]) {
+    assert.ok(!base(tools).includes('builtin:codemode'));
+  }
+});
+
 // A real Pi session with only the runner's inline factories: the child sees
 // the named server's tool, directly, and the other server never starts.
 test('in-process smoke: only the named MCP servers connect', async () => {

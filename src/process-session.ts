@@ -29,6 +29,7 @@ import {
   ACTIVITY_EVENTS,
   absoluteExtensionPaths,
   resolveExtensionPaths,
+  wantsCodemode,
 } from './session.ts';
 import type {
   ChildEvent,
@@ -139,9 +140,13 @@ const compiledEntries = (): ChildEntries => ({
   tail: siblingExtension('child-extension-tail'),
 });
 
+/** Pi's built-in codemode extension, as `-e` takes it. */
+export const CODEMODE_EXTENSION = 'builtin:codemode';
+
 /**
  * Extension modules in load order: the guard, the caller's, the installed
- * packages, Pi's MCP extension for the child's servers, then the tail hooks.
+ * packages, Pi's built-in codemode when listed in the tools, Pi's MCP extension
+ * for the child's servers, then the tail hooks.
  */
 export const processExtensionPaths = (
   spec: ChildSpec,
@@ -150,10 +155,14 @@ export const processExtensionPaths = (
   entries: ChildEntries = compiledEntries(),
 ) => {
   const mcp = mcpServers.length > 0 ? [entries.mcp] : [];
+  // `--no-extensions` also drops Pi's built-in codemode; load it explicitly
+  // and only when the child's tools list it.
+  const codemode = wantsCodemode(spec.guard) ? [CODEMODE_EXTENSION] : [];
   return [
     entries.guard,
     ...absoluteExtensionPaths(spec),
     ...installed,
+    ...codemode,
     ...mcp,
     entries.tail,
   ];

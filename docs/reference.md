@@ -48,7 +48,7 @@ interface HostRuntime {
   `SettingsManager` (`create`), `DefaultPackageManager`,
   `DefaultResourceLoader`, `createEventBus`, `ModelRuntime` (`create`),
   `resolveCliModel`, `createAgentSession`, `SessionManager` (`open`,
-  `inMemory`), `ProjectTrustStore`, `createMcpExtension`. Pass the whole
+  `inMemory`), `ProjectTrustStore`, `createMcpExtension`, `createCodemodeExtension`. Pass the whole
   `@earendil-works/pi-coding-agent` namespace; the runner copies just these
   members.
 - `tui` (`TuiRuntime`): `Key` (with `escape`, `up`, `down`, `pageUp`,
@@ -212,6 +212,35 @@ If no filesystem entry can be found (or nothing is bound), panes are disabled
 with one warning through `ctx.ui.notify`; the widget and `/agents` keep
 working. The viewer never falls back to a pi-tui copy next to the runner, and
 it exits with an error if it was not given a usable module.
+
+## Codemode in child agents
+
+Opt in per agent by listing `codemode` in `tools`. A child without it behaves
+as before: pi's SDK sessions do not load codemode on their own, and the
+process backend's `--no-extensions` also drops the CLI's built-in copy.
+
+- In-process: the runner adds the host's `createCodemodeExtension()` (from
+  the bound `pi`) to the child's inline extensions. `codemode` is active
+  because it is in the child's `tools`.
+- Process backend: the runner passes `-e builtin:codemode` next to
+  `--tools ...,codemode`.
+- Only the exact name `codemode` counts; a pattern such as `*` does not
+  enable it.
+- The guard applies to nested calls. Pi sends calls made by a script through
+  argument validation and the `tool_call` handlers, so `tools`, `readRoots`
+  and `gitGuard` refuse them like model-issued calls. A script also reaches
+  only the child's active tools: a tool outside `tools` does not exist for it.
+- The worker pool is process-wide, shared by every session in the Pi process:
+  at most 2 workers by default (`PI_CODEMODE_MAX_WORKERS` raises it). A script
+  waits up to 60 s for a free worker and then fails without running, so many
+  parallel children using codemode queue behind each other.
+- `codemode.mode` (`on` or `only`) comes from the user's Pi settings, not
+  from the runner. With `only` the child's other tools are described inside
+  the `codemode` tool instead of being declared.
+- `createCodemodeExtension` is a required capability of the bound `pi`; it
+  exists in the tested hosts (1.1.0 and 1.5.0).
+- MCP stays as described above: servers are forced to `direct` exposure and
+  do not depend on codemode.
 
 ## API
 

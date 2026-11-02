@@ -27,6 +27,7 @@ export type PiRuntime = Pick<
   | 'SessionManager'
   | 'ProjectTrustStore'
   | 'createMcpExtension'
+  | 'createCodemodeExtension'
 >;
 
 /** Exactly the TUI exports the runner uses. */
@@ -101,6 +102,7 @@ const PI_FUNCTIONS = [
   'resolveCliModel',
   'createAgentSession',
   'createMcpExtension',
+  'createCodemodeExtension',
 ] as const;
 const PI_CLASSES: Record<string, readonly string[]> = {
   SettingsManager: ['create'],

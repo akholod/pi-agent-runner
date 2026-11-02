@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Opt-in codemode for child agents: list `codemode` in `tools`. In-process
+  children get the host's `createCodemodeExtension()`; process children get
+  `-e builtin:codemode`. Without it nothing changes. Nested calls from scripts
+  still pass the runner's guard.
+- `createCodemodeExtension` joins the capabilities checked by
+  `bindHostRuntime` (present in Pi 1.1.0 and 1.5.0).
+
 ## [0.11.0]
 
 ### Breaking

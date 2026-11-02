@@ -138,3 +138,36 @@ test('startAgent loads factories once per session', async () => {
   assert.deepEqual(factory.calls[0]?.extensionFactories, [factoryFn]);
   await handle.dispose();
 });
+
+test('codemode is added only when the allowed tools list it', () => {
+  const names = (guardTools: string[] | undefined) =>
+    load(
+      spec({ guard: { allowedTools: guardTools, git: true, cwd: '/tmp' } }),
+    ).inline.map((e) => e.name);
+  assert.ok(names(['read', 'codemode']).includes('pi-agent-runner:codemode'));
+  for (const tools of [['read'], [], ['code*'], undefined]) {
+    assert.ok(!names(tools).includes('pi-agent-runner:codemode'));
+  }
+});
+
+test('codemode sits between the caller factories and the tail hooks', () => {
+  const noop: ExtensionFactory = () => undefined;
+  const { inline } = load(
+    spec({
+      extensionFactories: [noop],
+      guard: { allowedTools: ['codemode'], git: true, cwd: '/tmp' },
+    }),
+  );
+  assert.deepEqual(
+    inline.map((e) => e.name),
+    [
+      'pi-agent-runner:guard',
+      'pi-agent-runner:active-agent',
+      'caller-extension-0',
+      'pi-agent-runner:codemode',
+      'pi-agent-runner:freeze-prompt',
+      'pi-agent-runner:tool-start',
+      'pi-agent-runner:activity',
+    ],
+  );
+});

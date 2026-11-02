@@ -397,6 +397,32 @@ test('buildProcessArgs maps the spec to pi flags', () => {
   assert.ok(!bare.includes('--thinking'));
 });
 
+// What a real run hands to `pi`: `--no-extensions` also drops Pi's built-in
+// codemode, so it comes back only when the tools list it.
+for (const [listed, tools] of [
+  [true, ['read', 'codemode']],
+  [false, ['read']],
+] as const) {
+  const title = `process: codemode ${listed ? 'is' : 'is not'} loaded`;
+  test(`${title} for tools ${tools.join(',')}`, async () => {
+    const dir = scratch();
+    const copy = path.join(dir, 'argv.json');
+    const result = await runAgent(
+      options('scenario:normal', { tools: [...tools] }),
+      { factory: factory({ FAKE_ARGV_COPY: copy }) },
+    );
+    assert.equal(result.status, 'completed', result.error);
+    const { argv } = JSON.parse(fs.readFileSync(copy, 'utf8')) as {
+      argv: string[];
+    };
+    assert.equal(argv[argv.indexOf('--tools') + 1], tools.join(','));
+    assert.ok(argv.includes('--no-extensions'));
+    const extensions = argv.filter((a, i) => argv[i - 1] === '-e');
+    assert.equal(extensions.includes('builtin:codemode'), listed);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+}
+
 // The child is not attached to the run until its handshake ends, so the run
 // timers cannot reach it: one startup deadline must cover every step.
 for (const withheld of ['get_state', 'get_commands', 'get_messages']) {

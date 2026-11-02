@@ -18,7 +18,7 @@ import { pickAgent, renderActivity } from '../src/agents-command.ts';
 import { trackRun } from '../src/live.ts';
 import type { LiveRun } from '../src/live.ts';
 import { childMcpExtension } from '../src/mcp.ts';
-import { submitResultTool } from '../src/session.ts';
+import { buildInlineFactories, submitResultTool } from '../src/session.ts';
 import { toolParameters, validator } from '../src/structured.ts';
 import { renderRunsView } from '../src/view.ts';
 
@@ -123,6 +123,7 @@ class FakeTrustStore {
 }
 
 const mcpExtension = () => {};
+const codemodeExtension = () => {};
 const unsafeResult = { unsafe: 'schema' };
 const compiled = {
   Check: (value: unknown) => typeof value === 'string',
@@ -163,6 +164,10 @@ const fakeHost = {
     createMcpExtension: (options: unknown) => {
       log('createMcpExtension', options);
       return mcpExtension;
+    },
+    createCodemodeExtension: (options: unknown) => {
+      log('createCodemodeExtension', options);
+      return codemodeExtension;
     },
     SettingsManager: FakeSettingsManager,
     DefaultPackageManager: FakePackageManager,
@@ -333,6 +338,28 @@ test('the child MCP extension is built by the injected SDK', () => {
     [['files', 'direct']],
   );
   assert.ok(names().includes('getAgentDir'));
+});
+
+test('the child codemode extension is built by the injected SDK', () => {
+  const base: Omit<ChildSpec, 'guard'> = {
+    cwd: root,
+    systemPrompt: 'sys',
+    extensions: 'none',
+    noContextFiles: true,
+    noSkills: true,
+    providerExtensions: {},
+    policyExtensions: [],
+    parent: {} as ParentContext,
+    forwardAsks: false,
+  };
+  const listed = buildInlineFactories({
+    ...base,
+    guard: { allowedTools: ['read', 'codemode'], git: true, cwd: root },
+  });
+  const entry = listed.find((e) => e.name === 'pi-agent-runner:codemode');
+  assert.equal(entry?.factory, codemodeExtension);
+  assert.equal(entry?.replaceable, true);
+  assert.ok(names().includes('createCodemodeExtension'));
 });
 
 test('result validation compiles with the injected typebox', () => {

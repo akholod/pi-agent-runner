@@ -241,6 +241,10 @@ describe('capabilities', () => {
       /pi\.createAgentSession \(function\)/,
     );
     missing(
+      () => ({ ...host(), pi: { ...pi, createCodemodeExtension: undefined } }),
+      /pi\.createCodemodeExtension \(function\)/,
+    );
+    missing(
       () => ({ ...host(), tui: { ...tui, wrapTextWithAnsi: undefined } }),
       /tui\.wrapTextWithAnsi \(function\)/,
     );

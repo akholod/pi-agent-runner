@@ -110,6 +110,7 @@ type PiRuntime = Pick<
   | 'SessionManager'
   | 'ProjectTrustStore'
   | 'createMcpExtension'
+  | 'createCodemodeExtension'
 >;
 
 type TuiRuntime = Pick<

@@ -125,6 +125,9 @@ const ACTIVE_AGENT_PATH = `<inline:${ACTIVE_AGENT_NAME}>`;
 const CALLER_NAME = 'caller-extension';
 const CALLER_PREFIX = `<inline:${CALLER_NAME}-`;
 const MCP_NAME = 'pi-agent-runner:mcp';
+const CODEMODE_NAME = 'pi-agent-runner:codemode';
+/** The tool (and the built-in extension) that runs scripts over other tools. */
+export const CODEMODE_TOOL = 'codemode';
 const TAIL_NAMES = [
   'pi-agent-runner:freeze-prompt',
   'pi-agent-runner:tool-start',
@@ -371,8 +374,9 @@ export const submitResultTool = (resultTool: {
 });
 
 // Guard and active agent first, then the caller's extensions, then Pi's
-// built-in MCP when the child gets servers, then the freeze, tool-start and
-// activity hooks (see orderRunnerExtensions).
+// codemode (only when the tools list it) and built-in MCP (only when the child
+// gets servers), then the freeze, tool-start and activity hooks (see
+// orderRunnerExtensions).
 interface InlineHook {
   name: string;
   factory: ExtensionFactory;
@@ -380,7 +384,23 @@ interface InlineHook {
   replaceable?: boolean;
 }
 
+/**
+ * Whether the child gets `codemode`: only when its allowed tools list it by
+ * name. Nested calls from a script still pass the guard, so the same list
+ * limits what scripts can reach.
+ */
+export const wantsCodemode = (guard: Pick<GuardConfig, 'allowedTools'>) =>
+  guard.allowedTools?.includes(CODEMODE_TOOL) === true;
+
 export const buildInlineFactories = (spec: ChildSpec) => {
+  const codemode: InlineHook[] = [];
+  if (wantsCodemode(spec.guard)) {
+    codemode.push({
+      name: CODEMODE_NAME,
+      factory: requireHostRuntime().pi.createCodemodeExtension(),
+      replaceable: true,
+    });
+  }
   const servers = activeMcpServers(spec.mcpServers, spec.cwd);
   const mcp: InlineHook[] = [];
   if (servers.length > 0) {
@@ -397,6 +417,7 @@ export const buildInlineFactories = (spec: ChildSpec) => {
       name: `${CALLER_NAME}-${index}`,
       factory,
     })),
+    ...codemode,
     ...mcp,
     freezeHook,
     toolStartHook(spec),
