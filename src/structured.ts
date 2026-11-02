@@ -1,6 +1,6 @@
 // Structured output: the child ends its run by calling `submit_result`.
 // The collector is the single place that decides which submission counts.
-import { Compile as compile } from 'typebox/compile';
+import { requireHostRuntime } from './host-runtime.ts';
 
 export const SUBMIT_RESULT_TOOL = 'submit_result';
 
@@ -101,6 +101,8 @@ const capBytes = (text: string) => {
 export type Validation = { ok: true } | { ok: false; message: string };
 
 export const validator = (schema: Record<string, unknown>) => {
+  // Outside the try: an unbound host is not an invalid schema.
+  const { Compile: compile } = requireHostRuntime().typebox;
   let compiled: ReturnType<typeof compile>;
   try {
     compiled = compile(schema);

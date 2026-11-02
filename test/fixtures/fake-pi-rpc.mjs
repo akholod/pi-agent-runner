@@ -5,11 +5,21 @@
 //   FAKE_IGNORE_SHUTDOWN stdin close does not end the process
 //   FAKE_IGNORE_TERM     SIGTERM is ignored
 //   FAKE_CONFIG_COPY     receives a copy of the child config file
+//   FAKE_ARGV_COPY       receives {argv, env} as JSON
+//   FAKE_COPY_EXTENSIONS receives a copy of every `-e` file (by index)
+//   FAKE_WITHHOLD        command type that never gets a response (startup hang)
+//   FAKE_PIDFILE_START   receives the child's pid at startup
+//   FAKE_PROMPT_LOG      appended with every prompt received
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 const out = (record) => process.stdout.write(`${JSON.stringify(record)}\n`);
 const messages = [];
+
+if (process.env.FAKE_PIDFILE_START) {
+  fs.writeFileSync(process.env.FAKE_PIDFILE_START, String(process.pid));
+}
 
 if (process.env.FAKE_IGNORE_TERM) {
   process.on('SIGTERM', () => {
@@ -22,6 +32,31 @@ if (process.env.FAKE_CONFIG_COPY) {
     process.env.PI_AGENT_RUNNER_CHILD_CONFIG,
     process.env.FAKE_CONFIG_COPY,
   );
+}
+
+if (process.env.FAKE_ARGV_COPY) {
+  fs.writeFileSync(
+    process.env.FAKE_ARGV_COPY,
+    JSON.stringify({
+      argv: process.argv.slice(2),
+      script: process.argv[1],
+      execPath: process.execPath,
+      env: process.env,
+    }),
+  );
+}
+
+if (process.env.FAKE_COPY_EXTENSIONS) {
+  const args = process.argv.slice(2);
+  let index = 0;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] !== '-e') continue;
+    const name = `${index++}-${path.basename(args[i + 1])}`;
+    fs.copyFileSync(
+      args[i + 1],
+      path.join(process.env.FAKE_COPY_EXTENSIONS, name),
+    );
+  }
 }
 
 const assistant = (text, extra = {}) => ({
@@ -115,6 +150,7 @@ let slowActive = false;
 let wrapActive = false;
 
 const handle = (command) => {
+  if (process.env.FAKE_WITHHOLD === command.type) return;
   const reply = (data) =>
     out({
       id: command.id,
@@ -137,6 +173,7 @@ const handle = (command) => {
           : [
               { name: 'pi-agent-runner-guard' },
               { name: 'pi-agent-runner-tail' },
+              { name: 'pi-agent-runner-mcp' },
             ],
       });
       break;
@@ -144,6 +181,9 @@ const handle = (command) => {
       reply({ messages });
       break;
     case 'prompt': {
+      if (process.env.FAKE_PROMPT_LOG) {
+        fs.appendFileSync(process.env.FAKE_PROMPT_LOG, `${command.message}\n`);
+      }
       reply({ disposition: 'started' });
       const name = command.message.match(/scenario:(\w+)/)?.[1] ?? 'normal';
       begin(command.message);

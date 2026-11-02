@@ -7,6 +7,7 @@ import {
   toolParameters,
   validator,
 } from '../src/structured.ts';
+import './bind-host.ts';
 
 const CORRECTION =
   'You have not submitted a valid result. Call `submit_result` now with ' +

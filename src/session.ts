@@ -4,14 +4,16 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import * as pi from '@earendil-works/pi-coding-agent';
 import type {
+  AgentSession,
+  DefaultResourceLoader,
   ExtensionAPI,
   ExtensionContext,
   ExtensionFactory,
+  ModelRuntime as PiModelRuntime,
 } from '@earendil-works/pi-coding-agent';
-import { Unsafe as unsafe } from 'typebox';
 import { guardDecision } from './guards.ts';
+import { requireHostRuntime, serializeLoading } from './host-runtime.ts';
 import type { GuardConfig } from './guards.ts';
 import { activeMcpServers, childMcpExtension } from './mcp.ts';
 import { SUBMIT_RESULT_TOOL, toolParameters } from './structured.ts';
@@ -339,6 +341,7 @@ export const submitResultTool = (resultTool: {
 }): { name: string; factory: ExtensionFactory } => ({
   name: 'pi-agent-runner:submit-result',
   factory: (api: ExtensionAPI) => {
+    const { Unsafe: unsafe } = requireHostRuntime().typebox;
     api.registerTool({
       name: SUBMIT_RESULT_TOOL,
       label: 'Submit result',
@@ -404,8 +407,8 @@ export const buildInlineFactories = (spec: ChildSpec) => {
 };
 
 interface ModelTarget {
-  model: pi.AgentSession['model'];
-  setModel(model: NonNullable<pi.AgentSession['model']>): Promise<void>;
+  model: AgentSession['model'];
+  setModel(model: NonNullable<AgentSession['model']>): Promise<void>;
   setThinkingLevel(level: never): void;
 }
 
@@ -415,7 +418,7 @@ interface ModelTarget {
  */
 export const applyRequestedModel = async (
   session: ModelTarget,
-  model: NonNullable<pi.AgentSession['model']>,
+  model: NonNullable<AgentSession['model']>,
   thinkingLevel: ThinkingLevel | undefined,
 ) => {
   const same =
@@ -426,12 +429,12 @@ export const applyRequestedModel = async (
   }
 };
 
-type ModelRuntime = Awaited<ReturnType<typeof pi.ModelRuntime.create>>;
+type ModelRuntime = Awaited<ReturnType<typeof PiModelRuntime.create>>;
 
 // Registers what the loaded extensions queued; returns the claimed ids.
 const flushQueuedProviders = (
   modelRuntime: ModelRuntime,
-  loader: pi.DefaultResourceLoader,
+  loader: DefaultResourceLoader,
 ) => {
   const claimed = new Set<string>();
   const { runtime } = loader.getExtensions();
@@ -475,16 +478,13 @@ const resetExtensionCacheOnReload = (loader: object) => {
   if ('loaded' in loader) (loader as { loaded: boolean }).loaded = true;
 };
 
-// One creation at a time process-wide, so concurrent children never
-// interleave extension loading.
-let loading: Promise<unknown> = Promise.resolve();
-
 /**
  * Paths of the installed extensions a child loads: the requested packages,
  * the model provider's package and the policy packages. Shared by both
  * backends.
  */
 export const resolveExtensionPaths = async (spec: ChildSpec) => {
+  const { pi } = requireHostRuntime();
   const { cwd, parent } = spec;
   const agentDir = pi.getAgentDir();
   const settingsManager = pi.SettingsManager.create(cwd, agentDir);
@@ -533,6 +533,7 @@ const openSession = async (
   spec: ChildSpec,
   shutdownTimeoutMs: number,
 ): Promise<ChildSession> => {
+  const { pi } = requireHostRuntime();
   const { cwd, parent } = spec;
   const {
     agentDir,
@@ -694,14 +695,14 @@ const openSession = async (
 export const createPiSessionFactory = (
   options: { shutdownTimeoutMs?: number } = {},
 ): ChildSessionFactory => {
+  // Fail before any resource exists when the host was never bound.
+  requireHostRuntime();
   const shutdownTimeoutMs = options.shutdownTimeoutMs ?? 5000;
   return {
     create(spec) {
-      const opened = loading
-        .catch(() => {})
-        .then(() => openSession(spec, shutdownTimeoutMs));
-      loading = opened;
-      return opened;
+      // One creation at a time process-wide, across runner copies, so
+      // concurrent children never interleave extension loading.
+      return serializeLoading(() => openSession(spec, shutdownTimeoutMs));
     },
   };
 };

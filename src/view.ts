@@ -9,18 +9,14 @@ import type {
   Theme,
   ThemeColor,
 } from '@earendil-works/pi-coding-agent';
-import {
-  truncateToWidth,
-  visibleWidth,
-  type Component,
-  type TUI,
-} from '@earendil-works/pi-tui';
+import type { Component, TUI } from '@earendil-works/pi-tui';
 import {
   isPossiblyStuck,
   liveRuns,
   type LiveRegistry,
   type LiveRun,
 } from './live.ts';
+import { truncateToWidth, visibleWidth } from './tui.ts';
 
 export const WIDGET_KEY = 'pi-agent-runner-runs';
 export const RECENT_WINDOW_MS = 10 * 60_000;

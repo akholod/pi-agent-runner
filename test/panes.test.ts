@@ -3,6 +3,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
+import * as pi from '@earendil-works/pi-coding-agent';
+import { tuiModuleUrlFrom } from '../src/host-paths.ts';
 import type { ActivityEntry, LiveRegistry, LiveRun } from '../src/live.ts';
 import type { FeedRecord } from '../src/pane-feed.ts';
 import {
@@ -12,8 +14,10 @@ import {
   type PanesHandle,
   type PanesOptions,
 } from '../src/panes.ts';
+import './bind-host.ts';
 
 const LINGER = 5000;
+const TUI_URL = 'file:///host/pi-tui/dist/index.js';
 const GRACE = 1000;
 
 const herdrEnv = { HERDR_ENV: '1', HERDR_PANE_ID: 'w1:p1', PATH: '/bin' };
@@ -129,6 +133,7 @@ const setup = (
     hasBinary: () => true,
     feedDir: path.join(dir, 'feeds'),
     viewer: '/pkg/dist/pane-viewer.js',
+    tuiModule: TUI_URL,
     node: '/usr/bin/node',
     now: () => clock,
     setTimer: timers.setTimer,
@@ -272,7 +277,8 @@ test('herdr: a running child opens a pane with the viewer', async () => {
       'pane',
       'run',
       'w1:p2',
-      `exec '/usr/bin/node' '/pkg/dist/pane-viewer.js' '${feed}' '${LINGER}'`,
+      `exec '/usr/bin/node' '/pkg/dist/pane-viewer.js' '${feed}' ` +
+        `'${LINGER}' '${TUI_URL}'`,
     ],
     ['herdr', 'pane', 'rename', 'w1:p2', 'explorer · opium'],
   ]);
@@ -280,6 +286,17 @@ test('herdr: a running child opens a pane with the viewer', async () => {
   assert.equal(start.t, 'start');
   assert.equal((start as { name: string }).name, 'explorer');
   assert.equal((start as { pid: number }).pid, process.pid);
+});
+
+test('a missing tuiModule is resolved from the host installation', async () => {
+  const t = setup({ tuiModule: undefined });
+  t.mount();
+  t.reg.set([run('a')]);
+  await settle();
+  const url = tuiModuleUrlFrom(pi.getPackageDir());
+  assert.match(url, /^file:\/\/.*pi-tui/);
+  const ran = t.fake.calls.find((c) => c[2] === 'run');
+  assert.ok(ran?.at(-1)?.endsWith(` '${url}'`), String(ran?.at(-1)));
 });
 
 test('a .ts viewer is started with type stripping', async () => {
@@ -301,7 +318,8 @@ test('tmux: first pane right of the user pane, then down', async () => {
   await settle();
   const feedA = path.join(dir, 'feeds', 'a-g1.jsonl');
   const viewer = (feed: string) =>
-    `'/usr/bin/node' '/pkg/dist/pane-viewer.js' '${feed}' '${LINGER}'`;
+    `'/usr/bin/node' '/pkg/dist/pane-viewer.js' '${feed}' ` +
+    `'${LINGER}' '${TUI_URL}'`;
   assert.deepEqual(t.fake.calls, [
     [
       'tmux',

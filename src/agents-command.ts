@@ -20,15 +20,7 @@ import type {
   Theme,
   ThemeColor,
 } from '@earendil-works/pi-coding-agent';
-import {
-  Key,
-  matchesKey,
-  truncateToWidth,
-  wrapTextWithAnsi,
-  type Component,
-  type KeyId,
-  type TUI,
-} from '@earendil-works/pi-tui';
+import type { Component, KeyId, TUI } from '@earendil-works/pi-tui';
 import {
   liveRuns,
   runActivity,
@@ -44,6 +36,13 @@ import {
   statusOf,
   type Paint,
 } from './view.ts';
+import {
+  matchesKey,
+  truncateToWidth,
+  tuiRuntime,
+  wrapTextWithAnsi,
+} from './tui.ts';
+import type { TextRuntime } from './tui.ts';
 
 export interface AgentsCommandOptions {
   /** Also open the picker on this key; none by default. */
@@ -139,14 +138,21 @@ const INDENT = 11;
 // the title, two rules and the key hint
 const CHROME = 4;
 
-export const entryLines = (entry: ActivityEntry, width: number, p: Paint) => {
+export const entryLines = (
+  entry: ActivityEntry,
+  width: number,
+  p: Paint,
+  text: Pick<TextRuntime, 'wrapTextWithAnsi'> = { wrapTextWithAnsi },
+) => {
   const { mark, color } = KINDS[entry.kind];
   const room = Math.max(1, width - INDENT);
-  return wrapTextWithAnsi(entry.text, room).map((line, index) =>
-    index === 0
-      ? `${p.fg('dim', clockOf(entry.at))} ${p.fg(color, `${mark} ${line}`)}`
-      : `${' '.repeat(INDENT)}${p.fg(color, line)}`,
-  );
+  return text
+    .wrapTextWithAnsi(entry.text, room)
+    .map((line, index) =>
+      index === 0
+        ? `${p.fg('dim', clockOf(entry.at))} ${p.fg(color, `${mark} ${line}`)}`
+        : `${' '.repeat(INDENT)}${p.fg(color, line)}`,
+    );
 };
 
 export interface ActivityViewSpec {
@@ -255,6 +261,7 @@ const activityComponent = (
     },
     handleInput(data) {
       const page = Math.max(1, bodyRows(tui) - 1);
+      const { Key } = tuiRuntime();
       if (matchesKey(data, Key.escape) || matchesKey(data, 'q')) {
         dispose();
         done(undefined);

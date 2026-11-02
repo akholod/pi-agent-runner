@@ -7,7 +7,11 @@ import {
   createPiSessionFactory,
 } from './session.ts';
 import { inheritedDepth } from './child-config.ts';
-import { createProcessSessionFactory } from './process-session.ts';
+import { requireHostRuntime } from './host-runtime.ts';
+import {
+  assertProcessBackendReady,
+  createProcessSessionFactory,
+} from './process-session.ts';
 import {
   SUBMIT_RESULT_TOOL,
   correctionPrompt,
@@ -365,6 +369,17 @@ const createControl = (
 type Control = ReturnType<typeof createControl>;
 type Collector = ReturnType<typeof createResultCollector>;
 
+// Turns a missing host binding or process command into a failed start with
+// its diagnostic.
+const preflight = (check: () => void) => {
+  try {
+    check();
+  } catch (error) {
+    if (error instanceof Error) throw new StartError('failed', error.message);
+    throw error;
+  }
+};
+
 const toGenerationFailure = (error: StartError) => ({
   status: error.status,
   value: undefined,
@@ -405,6 +420,17 @@ const open = async (
   }
   const structured =
     options.result?.kind === 'structured' ? options.result.schema : undefined;
+  // The default in-process factory and result schemas (compiled by the
+  // host's typebox) need the host runtime. Check before anything is created:
+  // no transcript directory, timer or live-run entry.
+  if (structured || (!deps.factory && backend !== 'process')) {
+    preflight(() => void requireHostRuntime());
+  }
+  // The default process factory needs the binding for its child entry points
+  // and a resolvable command (explicit, bound, or the host CLI).
+  if (!deps.factory && backend === 'process') {
+    preflight(() => assertProcessBackendReady());
+  }
   const checker = structured ? validator(structured) : undefined;
   if (checker?.schemaError) throw new StartError('failed', checker.schemaError);
   if (options.resumeFrom && options.transcriptPath) {

@@ -15,12 +15,14 @@ export const TOOL_START_PREFIX = 'pi-agent-runner:tool-start ';
 export const SUBMIT_TITLE = 'pi-agent-runner:submit';
 
 /**
- * Marker commands the two child extensions register; the parent refuses to
- * run a child where either is missing (Pi would carry on without a guard
+ * Marker commands the child extensions register; the parent refuses to run
+ * a child where one is missing (Pi would carry on without a guard
  * whose extension failed to load).
  */
 export const GUARD_COMMAND = 'pi-agent-runner-guard';
 export const TAIL_COMMAND = 'pi-agent-runner-tail';
+/** Registered by the MCP extension, which only loads with MCP servers. */
+export const MCP_COMMAND = 'pi-agent-runner-mcp';
 
 export interface ChildConfig {
   guard: GuardConfig;

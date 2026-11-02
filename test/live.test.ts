@@ -9,6 +9,7 @@ import { describe, test } from 'node:test';
 import * as pi from '@earendil-works/pi-coding-agent';
 import { runAgent } from '../src/index.ts';
 import type { ParentContext, RunAgentOptions } from '../src/index.ts';
+import './bind-host.ts';
 
 const LIVE = process.env.RUNNER_LIVE === '1';
 const MODELS = (

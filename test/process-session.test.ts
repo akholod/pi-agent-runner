@@ -283,11 +283,14 @@ test('process: dispose escalates stdin close, SIGTERM, SIGKILL', async () => {
 });
 
 test('process: a child without the guard extension is refused', async () => {
+  const promptLog = path.join(scratch(), 'prompts.log');
   const result = await runAgent(options('scenario:normal'), {
-    factory: factory({ FAKE_NO_MARKERS: '1' }),
+    factory: factory({ FAKE_NO_MARKERS: '1', FAKE_PROMPT_LOG: promptLog }),
   });
   assert.equal(result.status, 'failed');
   assert.match(String(result.error), /child extension did not load/);
+  // the first prompt never reached the child
+  assert.equal(fs.existsSync(promptLog), false);
 });
 
 test('process: extensionFactories is refused', async () => {
@@ -392,4 +395,56 @@ test('buildProcessArgs maps the spec to pi flags', () => {
   assert.ok(!bare.includes('--no-skills'));
   assert.ok(!bare.includes('--model'));
   assert.ok(!bare.includes('--thinking'));
+});
+
+// The child is not attached to the run until its handshake ends, so the run
+// timers cannot reach it: one startup deadline must cover every step.
+for (const withheld of ['get_state', 'get_commands', 'get_messages']) {
+  test(`process: a child withholding ${withheld} fails startup`, async () => {
+    const dir = scratch();
+    const tmp = path.join(dir, 'tmp');
+    fs.mkdirSync(tmp);
+    const pidFile = path.join(dir, 'pid');
+    const promptLog = path.join(dir, 'prompts.log');
+    const previous = process.env.TMPDIR;
+    process.env.TMPDIR = tmp;
+    const began = Date.now();
+    let result: Awaited<ReturnType<typeof runAgent>>;
+    try {
+      result = await runAgent(options('scenario:normal'), {
+        factory: factory(
+          {
+            FAKE_WITHHOLD: withheld,
+            FAKE_PIDFILE_START: pidFile,
+            FAKE_PROMPT_LOG: promptLog,
+          },
+          { startTimeoutMs: 400 },
+        ),
+      });
+    } finally {
+      if (previous === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previous;
+    }
+    assert.equal(result.status, 'failed');
+    assert.match(String(result.error), /did not start in 400ms/);
+    assert.ok(Date.now() - began < 5000, 'startup was not bounded');
+    // killed, no prompt, no temp files (the generated entry points included)
+    assert.ok(await gone(Number(fs.readFileSync(pidFile, 'utf8'))));
+    assert.equal(fs.existsSync(promptLog), false);
+    assert.deepEqual(fs.readdirSync(tmp), []);
+  });
+}
+
+test('process: a finished handshake leaves no deadline timer', async () => {
+  const before = process
+    .getActiveResourcesInfo()
+    .filter((name) => name === 'Timeout').length;
+  const result = await runAgent(options('scenario:normal'), {
+    factory: factory({}, { startTimeoutMs: 60_000 }),
+  });
+  assert.equal(result.status, 'completed', result.error);
+  const after = process
+    .getActiveResourcesInfo()
+    .filter((name) => name === 'Timeout').length;
+  assert.ok(after <= before, `${after} timers left, ${before} before`);
 });

@@ -9,6 +9,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { hostTuiModuleUrl } from './host-paths.ts';
 import {
   liveRuns,
   runActivity,
@@ -67,6 +68,11 @@ export interface PanesOptions {
   viewer?: string;
   /** The `node` to run it with; default: this process's. */
   node?: string;
+  /**
+   * `file:` URL of the host's TUI module, passed to the viewer; default:
+   * resolved from the host installation. Without one, panes are disabled.
+   */
+  tuiModule?: string;
 }
 
 export interface PanesHandle {
@@ -309,6 +315,23 @@ const startPanes = (
     }
   };
 
+  // The viewer is a separate process without the binding: it imports the
+  // host's own TUI module, never a copy next to the runner.
+  let tuiModule = options.tuiModule;
+  if (!tuiModule) {
+    try {
+      tuiModule = hostTuiModuleUrl();
+    } catch (error) {
+      fail(
+        new Error(
+          `no host TUI module for the viewer (${
+            error instanceof Error ? error.message : String(error)
+          })`,
+        ),
+      );
+    }
+  }
+
   const forget = (pane: Pane): void => {
     pane.closed = true;
     if (pane.closeTimer !== undefined) clearTimer(pane.closeTimer);
@@ -424,7 +447,14 @@ const startPanes = (
       forget(pane);
       return;
     }
-    const command = [node, ...nodeArgs, viewer, pane.feed.file, `${lingerMs}`];
+    const command = [
+      node,
+      ...nodeArgs,
+      viewer,
+      pane.feed.file,
+      `${lingerMs}`,
+      tuiModule ?? '',
+    ];
     // the first pane splits the user's to the right, later ones stack
     // down from the newest viewer pane
     const live = [...panes.values()].filter(

@@ -11,6 +11,8 @@ import {
   runViewer,
   type ViewerOutput,
 } from '../src/pane-viewer.ts';
+import './bind-host.ts';
+import * as tuiText from '@earendil-works/pi-tui';
 
 let dir: string;
 let feed: string;
@@ -77,7 +79,13 @@ test('renders the feed, then exits after the linger', async () => {
   );
   const cap = capture();
   const began = Date.now();
-  await runViewer({ feed, out: cap.out, lingerMs: 60, pollMs: 5 });
+  await runViewer({
+    feed,
+    text: tuiText,
+    out: cap.out,
+    lingerMs: 60,
+    pollMs: 5,
+  });
   const took = Date.now() - began;
   assert.ok(took >= 55, `exited after ${took}ms, before the linger`);
   assert.ok(took < 2000);
@@ -95,7 +103,13 @@ test('renders the feed, then exits after the linger', async () => {
 test('tails a feed that grows, including a line cut in half', async () => {
   fs.writeFileSync(feed, '');
   const cap = capture();
-  const done = runViewer({ feed, out: cap.out, lingerMs: 10, pollMs: 5 });
+  const done = runViewer({
+    feed,
+    text: tuiText,
+    out: cap.out,
+    lingerMs: 10,
+    pollMs: 5,
+  });
   const wait = (ms: number) =>
     new Promise<void>((resolve) => {
       setTimeout(resolve, ms);
@@ -126,7 +140,13 @@ test('shows the reason of a failed run', async () => {
     error: 'timed out after 600000ms',
   } as FeedRecord);
   const cap = capture();
-  await runViewer({ feed, out: cap.out, lingerMs: 5, pollMs: 5 });
+  await runViewer({
+    feed,
+    text: tuiText,
+    out: cap.out,
+    lingerMs: 5,
+    pollMs: 5,
+  });
   assert.match(cap.text(), /◔ timed out · 1:02/);
   assert.match(cap.text(), /timed out after 600000ms/);
 });
@@ -135,6 +155,7 @@ test('a dead Pi process ends the viewer without an end record', async () => {
   append(START);
   const cap = capture();
   await runViewer({
+    text: tuiText,
     feed,
     out: cap.out,
     lingerMs: 5,
@@ -147,7 +168,13 @@ test('a dead Pi process ends the viewer without an end record', async () => {
 test('a removed feed ends the viewer', async () => {
   append(START);
   const cap = capture();
-  const done = runViewer({ feed, out: cap.out, lingerMs: 5, pollMs: 5 });
+  const done = runViewer({
+    feed,
+    text: tuiText,
+    out: cap.out,
+    lingerMs: 5,
+    pollMs: 5,
+  });
   await new Promise<void>((resolve) => {
     setTimeout(resolve, 30);
   });
@@ -176,6 +203,7 @@ test('on a terminal it pins a footer and scrolls the rest', async () => {
   );
   const cap = capture({ isTTY: true, rows: 10, columns: 50 });
   await runViewer({
+    text: tuiText,
     feed,
     out: cap.out,
     lingerMs: 5,
@@ -213,7 +241,7 @@ test('footerLine: waiting, wrapping up and the clock', () => {
     ...over,
   });
   const line = (s: ReturnType<typeof state> | undefined, now = 66_000) =>
-    footerLine(START, s, undefined, now, 0, 80, plain);
+    footerLine(START, s, undefined, now, 0, 80, plain, tuiText);
   assert.equal(line(undefined), '⠋ starting · 1:05');
   assert.equal(line(state({ waiting: true })), '⏸ waiting for you · 1:05');
   assert.equal(line(state({ wrappingUp: true })), '⠋ wrapping up · 1:05');
@@ -229,6 +257,7 @@ test('headerLines and endLines are plain text without a paint', () => {
     { ...START, generation: 2, context: undefined },
     60,
     plain,
+    tuiText,
   );
   assert.equal(title, 'explorer g2 · opus-5-5');
   assert.deepEqual(
@@ -236,6 +265,7 @@ test('headerLines and endLines are plain text without a paint', () => {
       { ...END, status: 'failed', error: 'boom\nbang' } as never,
       60,
       plain,
+      tuiText,
     ),
     ['✗ failed · 1:02 · 4 turns · 12.3k tok', '  boom bang'],
   );
@@ -325,6 +355,7 @@ test('a resize repaints the header, the body tail and the footer', async () => {
   );
   append(START, ...tools);
   const done = runViewer({
+    text: tuiText,
     feed,
     out: term,
     lingerMs: 400,
@@ -372,7 +403,13 @@ test('a long entry is wrapped anew to the new width', async () => {
     kind: 'text',
     text: 'one two three four five six seven eight nine ten eleven twelve',
   });
-  const done = runViewer({ feed, out: term, lingerMs: 100, pollMs: 5 });
+  const done = runViewer({
+    feed,
+    text: tuiText,
+    out: term,
+    lingerMs: 100,
+    pollMs: 5,
+  });
   await nextTick(40);
   const wide = term.lines().filter((l) => /one two|twelve/.test(l));
   assert.equal(wide.length, 2);

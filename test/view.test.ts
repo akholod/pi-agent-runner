@@ -23,6 +23,7 @@ import {
   type ViewContext,
   type WidgetFactory,
 } from '../src/view.ts';
+import './bind-host.ts';
 
 const NOW = 10_000_000;
 const SEC = 1000;

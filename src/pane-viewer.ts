@@ -8,7 +8,6 @@ import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { ThemeColor } from '@earendil-works/pi-coding-agent';
-import { truncateToWidth } from '@earendil-works/pi-tui';
 import { entryLines } from './agents-command.ts';
 import { DEFAULT_LINGER_MS, paneTitle, type FeedRecord } from './pane-feed.ts';
 import {
@@ -20,6 +19,7 @@ import {
   shortModel,
   type Paint,
 } from './view.ts';
+import type { TextRuntime } from './tui.ts';
 
 export const POLL_MS = 100;
 // the feed file is created before the pane; this long without it is a
@@ -59,6 +59,8 @@ export interface ViewerOutput {
 
 export interface ViewerOptions {
   feed: string;
+  /** Wrapping and truncation, from the host's TUI (see `hostTui`). */
+  text: TextRuntime;
   out?: ViewerOutput;
   lingerMs?: number;
   pollMs?: number;
@@ -113,7 +115,12 @@ const endingOf = (status: string): Ending => {
 
 const endLabel = (status: string): string => status.replace(/_/g, ' ');
 
-export const headerLines = (start: Start, width: number, p: Paint) => {
+export const headerLines = (
+  start: Start,
+  width: number,
+  p: Paint,
+  text: TextRuntime,
+) => {
   const gen = start.generation > 1 ? ` g${start.generation}` : '';
   const parts = [
     p.bold(oneLine(start.name) + gen),
@@ -124,12 +131,17 @@ export const headerLines = (start: Start, width: number, p: Paint) => {
   ];
   const title = parts.join(p.fg('dim', ' · '));
   return [
-    truncateToWidth(title, width, '…'),
+    text.truncateToWidth(title, width, '…'),
     p.fg('dim', '─'.repeat(Math.max(0, width))),
   ];
 };
 
-export const endLines = (end: End, width: number, p: Paint): string[] => {
+export const endLines = (
+  end: End,
+  width: number,
+  p: Paint,
+  text: TextRuntime,
+): string[] => {
   const { mark, color } = endingOf(end.status);
   const usage = usageText(end.tokens, end.cost);
   const facts = [
@@ -141,7 +153,7 @@ export const endLines = (end: End, width: number, p: Paint): string[] => {
   const lines = [p.fg(color, `${mark} ${facts.join(' · ')}`)];
   const reason = oneLine(end.error ?? '');
   if (reason) lines.push(p.fg(color, `  ${reason}`));
-  return lines.map((line) => truncateToWidth(line, width, '…'));
+  return lines.map((line) => text.truncateToWidth(line, width, '…'));
 };
 
 export const footerLine = (
@@ -152,12 +164,13 @@ export const footerLine = (
   frame: number,
   width: number,
   p: Paint,
+  text: TextRuntime,
 ): string => {
   if (end) {
     const { mark, color } = endingOf(end.status);
     const took = formatElapsed(end.at - end.startedAt);
-    const text = `${mark} ${endLabel(end.status)} · ${took}`;
-    return truncateToWidth(p.fg(color, text), width, '…');
+    const summary = `${mark} ${endLabel(end.status)} · ${took}`;
+    return text.truncateToWidth(p.fg(color, summary), width, '…');
   }
   const running = !state || state.state === 'running';
   let label: string = state?.state ?? 'starting';
@@ -174,7 +187,7 @@ export const footerLine = (
   ].filter(Boolean);
   const color: ThemeColor =
     state?.waiting || state?.wrappingUp ? 'warning' : 'accent';
-  return truncateToWidth(
+  return text.truncateToWidth(
     p.fg(color, `${glyph} ${facts.join(' · ')}`),
     width,
     '…',
@@ -212,7 +225,16 @@ export const runViewer = (options: ViewerOptions): Promise<void> => {
 
   const footer = (): void => {
     if (!tty || !start) return;
-    const line = footerLine(start, state, end, now(), frame, width(), p);
+    const line = footerLine(
+      start,
+      state,
+      end,
+      now(),
+      frame,
+      width(),
+      p,
+      options.text,
+    );
     write(`\x1b7\x1b[${rows()};1H\x1b[2K${line}\x1b8`);
   };
 
@@ -234,7 +256,7 @@ export const runViewer = (options: ViewerOptions): Promise<void> => {
     const first = bottom() - body.length + 1;
     const at = (row: number, text: string): string =>
       `\x1b[${row};1H\x1b[2K${text}`;
-    const head = headerLines(start, w, p);
+    const head = headerLines(start, w, p, options.text);
     const header = head.map((l, i) => at(i + 1, l)).join('');
     const rowsOut = body.map((l, i) => at(first + i, l)).join('');
     const region = `\x1b[${HEADER_ROWS + 1};${bottom()}r`;
@@ -269,17 +291,21 @@ export const runViewer = (options: ViewerOptions): Promise<void> => {
   const handle = (record: FeedRecord): void => {
     if (record.t === 'start') {
       start = record;
-      if (tty) paint();
-      else write(`${headerLines(record, width(), p).join('\n')}\n`);
+      if (tty) {
+        paint();
+      } else {
+        const head = headerLines(record, width(), p, options.text);
+        write(`${head.join('\n')}\n`);
+      }
       setTitle(record);
     } else if (record.t === 'entry') {
-      emit((w) => entryLines(record, w, p));
+      emit((w) => entryLines(record, w, p, options.text));
     } else if (record.t === 'state') {
       state = record;
       footer();
     } else if (record.t === 'end') {
       end = record;
-      emit((w) => endLines(record, w, p));
+      emit((w) => endLines(record, w, p, options.text));
     }
   };
 
@@ -397,20 +423,54 @@ const isMain = (): boolean => {
   }
 };
 
+const isTextRuntime = (value: unknown): value is TextRuntime => {
+  const module = value as Partial<TextRuntime> | null;
+  return (
+    typeof module?.truncateToWidth === 'function' &&
+    typeof module.wrapTextWithAnsi === 'function'
+  );
+};
+
+/**
+ * Imports the host-owned TUI module the parent named. There is no fallback
+ * to a copy of pi-tui next to the viewer.
+ */
+export const loadHostTui = async (url: string | undefined) => {
+  if (!url) throw new Error('no host TUI module URL was given');
+  const module: unknown = await import(url);
+  if (!isTextRuntime(module)) {
+    throw new Error(`${url} does not export the text helpers`);
+  }
+  return module;
+};
+
 if (isMain()) {
-  const [feed, linger] = process.argv.slice(2);
-  if (!feed) {
-    process.stderr.write('usage: pane-viewer <feed file> [lingerMs]\n');
+  // Own process, no host binding: the parent passes the host's TUI module.
+  const [feed, linger, tuiUrl] = process.argv.slice(2);
+  if (!feed || !tuiUrl) {
+    process.stderr.write(
+      'usage: pane-viewer <feed file> <lingerMs> <host TUI module URL>\n',
+    );
     process.exit(2);
   }
   const lingerMs = Number(linger);
   muteEcho(false);
   process.on('exit', () => muteEcho(true));
-  runViewer({
-    feed,
-    lingerMs: Number.isFinite(lingerMs) && linger ? lingerMs : undefined,
-  }).then(
-    () => process.exit(0),
-    () => process.exit(1),
-  );
+  loadHostTui(tuiUrl)
+    .then((text) =>
+      runViewer({
+        feed,
+        text,
+        lingerMs: Number.isFinite(lingerMs) && linger ? lingerMs : undefined,
+      }),
+    )
+    .then(
+      () => process.exit(0),
+      (error: unknown) => {
+        process.stderr.write(
+          `pane-viewer: ${error instanceof Error ? error.message : error}\n`,
+        );
+        process.exit(1);
+      },
+    );
 }

@@ -4,11 +4,14 @@
 // only the servers it was given, with their tools declared directly.
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as pi from '@earendil-works/pi-coding-agent';
-import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
+import type {
+  ExtensionContext,
+  McpExtensionOptions,
+} from '@earendil-works/pi-coding-agent';
+import { requireHostRuntime } from './host-runtime.ts';
 
 type LoadedMcpConfig = ReturnType<
-  NonNullable<pi.McpExtensionOptions['loadConfig']>
+  NonNullable<McpExtensionOptions['loadConfig']>
 >;
 type McpServerEntry = LoadedMcpConfig['servers'][number];
 
@@ -118,6 +121,7 @@ const readServers = (
 
 /** Whether Pi's trust store trusts the project, as `.pi/mcp.json` needs. */
 const projectTrusted = (agentDir: string, cwd: string) => {
+  const { pi } = requireHostRuntime();
   // No project config: skip the store (it takes a lock file).
   if (!fs.existsSync(path.join(cwd, '.pi'))) return false;
   try {
@@ -134,6 +138,7 @@ const projectTrusted = (agentDir: string, cwd: string) => {
  * same name.
  */
 export const builtinMcpServers = (cwd?: string): BuiltinMcpServer[] => {
+  const { pi } = requireHostRuntime();
   const agentDir = pi.getAgentDir();
   const trusted = cwd !== undefined && projectTrusted(agentDir, cwd);
   const servers = readServers(agentDir, cwd ?? process.cwd(), trusted);
@@ -175,6 +180,7 @@ const stringsOf = (value: unknown) =>
  * `cwd`, a trusted project's `.pi/settings.json` can override it.
  */
 export const builtinMcpDisabled = (cwd?: string): boolean => {
+  const { pi } = requireHostRuntime();
   const agentDir = pi.getAgentDir();
   const user = readJson(path.join(agentDir, 'settings.json'));
   let enabled = enabledByList(stringsOf(isRecord(user) ? user.extensions : []));
@@ -237,6 +243,7 @@ export const childMcpConfig =
   (
     ctx: Pick<ExtensionContext, 'cwd' | 'isProjectTrusted'>,
   ): LoadedMcpConfig => {
+    const { pi } = requireHostRuntime();
     const agentDir = pi.getAgentDir();
     const trusted = ctx.isProjectTrusted() && projectTrusted(agentDir, ctx.cwd);
     const found = readServers(agentDir, ctx.cwd, trusted);
@@ -265,4 +272,6 @@ export const childMcpConfig =
 
 /** The child's MCP extension: Pi's built-in one, restricted to `servers`. */
 export const childMcpExtension = (servers: string[]) =>
-  pi.createMcpExtension({ loadConfig: childMcpConfig(servers) });
+  requireHostRuntime().pi.createMcpExtension({
+    loadConfig: childMcpConfig(servers),
+  });

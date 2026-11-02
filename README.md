@@ -60,6 +60,36 @@ flowchart LR
   child -->|answer or JSON| ext
 ```
 
+## Setup: bind the host runtime
+
+The runner does not import Pi's SDK itself. Pi loads your extension's `.ts`
+with its own copies of `@earendil-works/*` and `typebox`, but a compiled
+package in `node_modules` is imported natively and would get whatever Pi copy
+sits next to it, possibly an older one than the Pi that is running. So your
+extension hands the host's copies to the runner.
+
+Call `bindHostRuntime` once from your extension's `.ts` entry, before any
+other runner API:
+
+```ts
+import * as hostPi from '@earendil-works/pi-coding-agent';
+import * as hostTui from '@earendil-works/pi-tui';
+import { Unsafe } from 'typebox';
+import { Compile } from 'typebox/compile';
+import { bindHostRuntime } from 'pi-agent-runner';
+
+export default function (pi: hostPi.ExtensionAPI) {
+  bindHostRuntime({ pi: hostPi, tui: hostTui, typebox: { Unsafe, Compile } });
+  // the rest of your setup
+}
+```
+
+Without it, `runAgent` returns `failed` and `startAgent` rejects with
+`PI_AGENT_RUNNER_HOST_UNBOUND`. The process backend also no longer starts `pi`
+from `PATH`: it runs the CLI of the Pi installation you bound. Pi 1.1.0 and
+1.5.0 are tested. The host packages are optional peer dependencies. Details,
+errors and standalone use: [docs/reference.md](https://github.com/akholod/pi-agent-runner/blob/main/docs/reference.md#binding-the-host-runtime).
+
 ## Quick start
 
 ```sh
@@ -68,14 +98,19 @@ npm install pi-agent-runner
 
 ```ts
 // review.ts
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import * as hostPi from '@earendil-works/pi-coding-agent';
+import * as hostTui from '@earendil-works/pi-tui';
+import { Unsafe } from 'typebox';
+import { Compile } from 'typebox/compile';
 import {
+  bindHostRuntime,
   mountRunsView,
   registerAgentsCommand,
   runAgent,
 } from 'pi-agent-runner';
 
-export default function (pi: ExtensionAPI) {
+export default function (pi: hostPi.ExtensionAPI) {
+  bindHostRuntime({ pi: hostPi, tui: hostTui, typebox: { Unsafe, Compile } });
   registerAgentsCommand(pi); // /agents: activity, cancel, take over
   let view: { dispose(): void } | undefined;
   pi.on('session_start', (_event, ctx) => {
@@ -128,8 +163,9 @@ finished one over in your own Pi session.
 - **A real kill switch.** `backend: 'process'` runs a child as a separate
   `pi` process that can be killed, along with anything it started.
 
-Needs Pi 1.1 or newer. The API is still 0.x and may change between minor
-versions, so pin one (`^0.6.0`).
+Needs Pi 1.1 or newer (tested with 1.1.0 and 1.5.0). The API is still 0.x
+and may change between minor versions, so pin one (`^0.11.0`). See the
+[changelog](https://github.com/akholod/pi-agent-runner/blob/main/CHANGELOG.md).
 
 ## Docs
 

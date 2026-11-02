@@ -1,3 +1,4 @@
+import './bind-host.ts';
 import type {
   ChildEvent,
   ChildSession,

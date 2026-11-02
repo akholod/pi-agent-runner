@@ -5,6 +5,15 @@ export {
   WRAP_UP_MESSAGE,
   wrapUpMessage,
 } from './run-agent.ts';
+// Required: call `bindHostRuntime({ pi, tui, typebox })` from the extension
+// entry before any other runner API. See docs/reference.md.
+export { bindHostRuntime, getHostRuntimeInfo } from './host-runtime.ts';
+export type {
+  HostRuntime,
+  HostRuntimeInfo,
+  PiRuntime,
+  TuiRuntime,
+} from './host-runtime.ts';
 export { SUBMIT_RESULT_TOOL } from './structured.ts';
 export {
   createPiSessionFactory,

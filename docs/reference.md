@@ -3,6 +3,216 @@
 Everything the [README](../README.md) leaves out: options, statuses,
 timeouts, guards, backends, the live registry and known limitations.
 
+## Binding the host runtime
+
+The runner never imports Pi's SDK, `@earendil-works/pi-tui` or `typebox` for
+values. The extension hands them over, so the runner always uses the copy the
+host loaded, not one sitting next to it in `node_modules`. Why: Pi loads an
+extension's own `.ts` through a loader that maps these packages to the host
+copies, but files inside `node_modules` (the compiled runner) are imported
+natively and would get whatever copy is installed beside them.
+
+Call `bindHostRuntime` from the `.ts` entry of every extension that uses the
+runner, before any other runner API (`runAgent`, `startAgent`,
+`createPiSessionFactory`, `mountRunsView`, `registerAgentsCommand`, MCP
+helpers). Importing the runner without binding is fine; nothing reads the host
+at import time.
+
+```ts
+import * as hostPi from '@earendil-works/pi-coding-agent';
+import * as hostTui from '@earendil-works/pi-tui';
+import { Unsafe } from 'typebox';
+import { Compile } from 'typebox/compile';
+import { bindHostRuntime } from 'pi-agent-runner';
+
+export default function extension(pi: hostPi.ExtensionAPI) {
+  bindHostRuntime({ pi: hostPi, tui: hostTui, typebox: { Unsafe, Compile } });
+  // existing initialization follows
+}
+```
+
+### `bindHostRuntime(host: HostRuntime): void`
+
+Validates the host, then installs it. Synchronous; throws on a bad host.
+
+```ts
+interface HostRuntime {
+  pi: PiRuntime; // SDK exports the runner uses
+  tui: TuiRuntime; // pi-tui exports the runner uses
+  typebox: { Unsafe: typeof Unsafe; Compile: typeof Compile };
+  processCommand?: readonly [string, ...string[]]; // see Process backend
+}
+```
+
+- `pi` (`PiRuntime`): `VERSION`, `getAgentDir`, `getPackageDir`,
+  `SettingsManager` (`create`), `DefaultPackageManager`,
+  `DefaultResourceLoader`, `createEventBus`, `ModelRuntime` (`create`),
+  `resolveCliModel`, `createAgentSession`, `SessionManager` (`open`,
+  `inMemory`), `ProjectTrustStore`, `createMcpExtension`. Pass the whole
+  `@earendil-works/pi-coding-agent` namespace; the runner copies just these
+  members.
+- `tui` (`TuiRuntime`): `Key` (with `escape`, `up`, `down`, `pageUp`,
+  `pageDown`), `matchesKey`, `truncateToWidth`, `visibleWidth`,
+  `wrapTextWithAnsi`. `pi-ai` is not passed: the host's `ModelRuntime` and
+  `createAgentSession` already use the host's AI package.
+- `typebox`: `Unsafe` from `typebox` and `Compile` from `typebox/compile`.
+  Structured `result` schemas are compiled with them.
+- `processCommand` (optional): a non-empty array of non-empty strings,
+  `[command, ...args]`. Anything else throws a `TypeError`.
+
+A missing export, a non-function where a function or static method is
+expected, or no string `VERSION` throws `bindHostRuntime: host is missing
+<capability> (host VERSION <version>)`.
+
+### `getHostRuntimeInfo()`
+
+Reports what is bound, for diagnostics. It does not need the binding.
+
+```ts
+import { getHostRuntimeInfo } from 'pi-agent-runner';
+
+getHostRuntimeInfo();
+// { bound: false }
+// { bound: true, source: 'injected', hostVersion: '1.5.0',
+//   testedVersions: ['1.1.0', '1.5.0'], warnings: [] }
+```
+
+`warnings` holds the compatibility warnings recorded at binding (see the
+version policy).
+
+### Errors
+
+| Code                            | When                                                                                                                                          |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PI_AGENT_RUNNER_HOST_UNBOUND:` | The runtime is used before `bindHostRuntime`. Message: `Call bindHostRuntime() from the Pi extension entry before using the runtime.`         |
+| `HOST_CONFLICT:`                | A different host runtime is already bound. The message names both `VERSION`s and the differing members (for example `pi.createAgentSession`). |
+
+Where each one surfaces when nothing is bound:
+
+- `createPiSessionFactory()` throws.
+- `startAgent` rejects and `runAgent` returns `status: 'failed'` with the
+  message in `error`. Both check first, so no transcript directory, timer or
+  live-run entry is created.
+- A structured `result` fails the same way, because the schema is compiled by
+  the host's `typebox`.
+- An injected `ChildSessionFactory` (your own, or a test fake) keeps working
+  unbound for runs without a structured `result`.
+- Pure helpers and `liveRuns()` need no host.
+
+### Version policy
+
+Tested hosts: Pi `1.1.0` and `1.5.0`.
+
+| Host `VERSION`                       | Result                                                  |
+| ------------------------------------ | ------------------------------------------------------- |
+| Below `1.1.0`                        | `bindHostRuntime` throws                                |
+| Missing or not a string              | throws (`pi.VERSION (string)` missing)                  |
+| Not parseable as `major.minor.patch` | binds; warning; the capability checks still apply       |
+| Parseable, not `1.1.0` or `1.5.0`    | binds; warning that it is not among the tested versions |
+| `1.1.0` or `1.5.0`                   | binds without a warning                                 |
+
+Capability checks run on every host regardless of version, so a host that
+lacks an export fails at bind time rather than in the middle of a run.
+
+### Rebinding, conflicts and reload
+
+- The first valid binding installs the runtime. Binding the same references
+  again is a no-op, also through a different wrapper object around the same
+  module.
+- References of the used functions, classes and `processCommand` are
+  compared, not namespace objects and not `VERSION`. The same `VERSION` with
+  different implementations is a `HOST_CONFLICT`. A conflict means a different
+  runtime in a live process: restart Pi.
+- There is no unbind. `session_shutdown` leaves the binding in place and
+  `/reload` binds again with the same references, which is a no-op.
+- The binding lives in one slot on `globalThis`
+  (`Symbol.for('pi-agent-runner:host-runtime:v1')`), so several physical
+  copies of the runner in one process (for example the ones bundled with
+  Opium and Spiral) share it, along with the session-loading queue, the live
+  registry and the other process-wide stores. Each copy must be 0.11 or newer
+  and be bound; an older copy does not start using the host because another
+  one was bound.
+- Session creation is serialized across copies: concurrent children never
+  interleave extension loading. The lock covers loading only, not the child's
+  lifetime.
+
+### Packages
+
+`@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`,
+`@earendil-works/pi-tui` and `typebox` are optional peer dependencies. The
+runner does not import them for values, so installing them next to it is not
+needed, and a stale copy that happens to be there is not used. They stay peers
+so types resolve when you build against them. The runner's own development
+baseline is Pi 1.5.
+
+### Standalone SDK use
+
+Outside a Pi extension (your own application or script using the SDK), bind in
+your application's entry, before the first runner call, with the same imports:
+
+```ts
+import * as pi from '@earendil-works/pi-coding-agent';
+import * as tui from '@earendil-works/pi-tui';
+import { Unsafe } from 'typebox';
+import { Compile } from 'typebox/compile';
+import { bindHostRuntime } from 'pi-agent-runner';
+
+bindHostRuntime({ pi, tui, typebox: { Unsafe, Compile } });
+```
+
+Here the "host" is whatever installation your application imports. The
+process backend and the pane viewer find the CLI and the TUI module from that
+installation (below); if `pi.getPackageDir()` does not point at a normal
+package directory, give a `processCommand`.
+
+### Process backend and the host
+
+The process backend starts the CLI of the host installation, never `pi` from
+`PATH`. Command precedence:
+
+1. the `command` option of `createProcessSessionFactory`;
+2. the bound `processCommand`;
+3. `[process.execPath, <bin.pi>]`, derived from the bound
+   `pi.getPackageDir()`. That directory's `package.json` must be named
+   `@earendil-works/pi-coding-agent`, have exactly the bound `VERSION`, and
+   its `bin.pi` must be a file inside the directory.
+
+There is no fallback to `PATH`. If none of the three works (a compiled-binary
+host, an unreadable or mismatching manifest), `runAgent` returns `failed` and
+`startAgent` rejects with `cannot determine the host Pi CLI: <reason>; pass an
+explicit command: ...`, before any directory, timer or live-run entry exists.
+
+The child needs the binding too, and it runs in another process. In the run's
+temporary directory (outside `node_modules`, so the child's loader treats them
+as extension source) the runner generates small entry points, one each for the
+guard, the MCP extension (only with `mcpServers`) and the tail hooks. Each one
+imports the child host's SDK, TUI and typebox, throws if the child's Pi
+`VERSION` differs from the parent's, calls `bindHostRuntime`, then hands over
+to the compiled child extension. Load order is unchanged: guard, caller
+extensions, installed extensions, MCP, tail. The parent checks the child's
+marker commands (guard, tail, and MCP when used); if a wrapper failed, the
+child is stopped before its first prompt with `the runner's child extension
+did not load (<marker>)`.
+
+Startup deadline: `startTimeoutMs` (default 30 s) is one deadline over the
+whole handshake: the first state request, the marker check and the first
+message list. A child that answers some requests and withholds the rest still
+fails with `child process did not start in <n>ms`, and the child is stopped.
+
+### Pane viewer
+
+The viewer (`mountPanes`) is a separate `node` process that has no binding.
+The runner resolves the host's pi-tui entry from the host installation (the
+`node_modules` of the `getPackageDir()` directory and then of each ancestor,
+using the package's `import`/`default` export) and passes it to the viewer as
+a `file:` URL in the last argument; the viewer imports it for wrapping and
+truncation. The `tuiModule` option overrides the URL.
+
+If no filesystem entry can be found (or nothing is bound), panes are disabled
+with one warning through `ctx.ui.notify`; the widget and `/agents` keep
+working. The viewer never falls back to a pi-tui copy next to the runner, and
+it exits with an error if it was not given a usable module.
+
 ## API
 
 ```ts
@@ -161,8 +371,8 @@ combine the two.
 - What loads: Pi's MCP extension with a config of its own, so the child
   connects **only the named servers**, never every enabled one. The
   in-process backend adds it as an inline extension, replaceable like Pi's
-  (`pi-agent-runner:mcp`); the process backend loads `child-mcp.js` with
-  `-e`. `-e builtin:mcp` is not used: it would connect every enabled server
+  (`pi-agent-runner:mcp`); the process backend loads it with `-e`
+  through a generated entry point (see Binding the host runtime). `-e builtin:mcp` is not used: it would connect every enabled server
   and cannot be restricted.
 - What the child sees: each tool as a direct tool `mcp__<server>__<tool>`
   (every character other than a letter, digit or `_` becomes `_`, so
@@ -212,8 +422,9 @@ Y`). Trade-offs:
   cancels at once. Child notifications are forwarded to `ctx.ui.notify`,
   prefixed with the label name.
 - The guards, prompt freeze, tool-start signal and `submit_result` run in
-  the child through the runner's own extensions (`dist/child-extension.js`,
-  `dist/child-extension-tail.js`); `submit_result` is validated in the
+  the child through the runner's own extensions (compiled
+  `child-extension.js` and `child-extension-tail.js`, each loaded through a
+  generated entry point that binds the host runtime); `submit_result` is validated in the
   parent. Nesting depth is passed down in `PI_AGENT_RUNNER_DEPTH`.
 
 Permission asks: `permissionAsks: 'forward'` (default) registers the child
@@ -330,7 +541,13 @@ Options:
 - `filter(run)`: which runs get a pane (default: every run). It is asked once
   per run generation, when the run starts.
 - Test seams: `registry`, `now`, `setTimer`, `clearTimer`, `exec`, `execSync`,
-  `env`, `hasBinary`, `activity`, `feedDir`, `viewer`, `node`.
+  `env`, `hasBinary`, `activity`, `feedDir`, `viewer`, `node`, `tuiModule`.
+- The viewer is a separate process without the binding. It imports the
+  host's own pi-tui module, named by a `file:` URL in its last argument
+  (resolved from the host installation's package directory; `tuiModule`
+  overrides it). If no filesystem entry is found, panes are disabled with a
+  warning; a copy of pi-tui next to the runner is never used. Details:
+  Binding the host runtime, Pane viewer.
 
 Layout. The first pane splits the pane you are in to the right; later ones
 split the newest viewer pane down, so the viewers stack in one column and your
@@ -339,10 +556,10 @@ working directory is `ctx.cwd` (`process.cwd()` without it). The commands:
 
 - herdr: `herdr pane split --current|--pane <viewer> --direction right|down
 --cwd <dir> --no-focus` (JSON `.result.pane.pane_id`), then `herdr pane run
-<id> "exec node <dist>/pane-viewer.js <feed> <lingerMs>"` (`exec`, so the
+<id> "exec node <dist>/pane-viewer.js <feed> <lingerMs> <tui url>"` (`exec`, so the
   pane closes with the viewer), and `herdr pane close <id>`.
 - tmux: `tmux split-window -d -h|-v -P -F '#{pane_id}' -c <dir> -t <pane>
-'<node> <dist>/pane-viewer.js <feed> <lingerMs>'` (the pane closes when the
+'<node> <dist>/pane-viewer.js <feed> <lingerMs> <tui url>'` (the pane closes when the
   command exits), and `tmux kill-pane -t <id>`.
 
 The feed. The child runs inside your Pi process, so the pane cannot read its
