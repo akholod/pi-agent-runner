@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.11.0]
 
 ### Added
 
@@ -10,8 +10,6 @@
   still pass the runner's guard.
 - `createCodemodeExtension` joins the capabilities checked by
   `bindHostRuntime` (present in Pi 1.1.0 and 1.5.0).
-
-## [0.11.0]
 
 ### Breaking
 
